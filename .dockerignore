@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+*.egg-info
+**/__pycache__
+**/*.pyc
+tree_detector/runs
+tree_detector/*.ipynb
+tree_detector/*.pt
+tests
+docs/*.docx
+.DS_Store

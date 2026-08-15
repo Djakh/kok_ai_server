@@ -1,0 +1,8 @@
+{
+  "access_token": "sanitized-provider-reference",
+  "model_version": "fixture-plant-id-v3",
+  "result": {
+    "is_plant": {"binary": false, "probability": 0.03, "threshold": 0.5},
+    "classification": {"suggestions": []}
+  }
+}

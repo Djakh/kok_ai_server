@@ -1,0 +1,32 @@
+{
+  "access_token": "sanitized-provider-reference",
+  "model_version": "fixture-plant-id-v3",
+  "result": {
+    "is_plant": {"binary": true, "probability": 0.98, "threshold": 0.5},
+    "classification": {
+      "suggestions": [
+        {
+          "id": "fixture-taxon-platanus-orientalis",
+          "name": "Platanus orientalis",
+          "probability": 0.87,
+          "details": {
+            "common_names": ["Oriental plane"],
+            "taxonomy": {"genus": "Platanus", "family": "Platanaceae"},
+            "description": {
+              "value": "A large deciduous tree.",
+              "citation": "Fixture botanical source",
+              "license_name": "CC BY 4.0",
+              "license_url": "https://creativecommons.org/licenses/by/4.0/"
+            },
+            "image": {
+              "value": "https://images.example.invalid/platanus.jpg",
+              "citation": "Fixture image source",
+              "license_name": "CC BY 4.0",
+              "license_url": "https://creativecommons.org/licenses/by/4.0/"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

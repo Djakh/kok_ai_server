@@ -1,0 +1,1 @@
+MAX_BIO_LENGTH = 500
