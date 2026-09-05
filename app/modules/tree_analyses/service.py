@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.common.config import Settings
 from app.common.errors.exceptions import AppError
-from app.common.observability import analysis_concurrency_slot, increment
+from app.common.observability import analysis_concurrency_slot, increment, request_id_context
 from app.common.storage.s3 import put_private_image
 from app.modules.tree_analyses.images import PreparedImage
 from app.modules.tree_analyses.models import (
@@ -32,6 +33,13 @@ from app.modules.tree_analyses.repository import TreeAnalysisRepository
 from app.modules.users.models import UserSettings
 
 StorageWriter = Callable[[bytes, str, str, str], str]
+IDEMPOTENCY_CONSTRAINT = "uq_tree_analyses_owner_idempotency"
+logger = logging.getLogger(__name__)
+
+
+def integrity_constraint_name(exc: IntegrityError) -> str | None:
+    diag = getattr(exc.orig, "diag", None)
+    return getattr(diag, "constraint_name", None)
 
 
 def request_fingerprint(
@@ -150,19 +158,33 @@ class TreeAnalysisService:
         try:
             analysis = self.repo.create(
                 TreeAnalysis(
-                owner_user_id=owner_id,
-                status="validating",
-                idempotency_key=idempotency_key,
-                request_fingerprint=fingerprint,
-                latitude=float(location_evidence["latitude"]),
-                longitude=float(location_evidence["longitude"]),
-                location_evidence=location_evidence,
-                provider_name="kindwise_plant_id",
-                health_mode=self.settings.kindwise_health_mode,
+                    owner_user_id=owner_id,
+                    status="validating",
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=fingerprint,
+                    latitude=float(location_evidence["latitude"]),
+                    longitude=float(location_evidence["longitude"]),
+                    location_evidence=location_evidence,
+                    provider_name="kindwise_plant_id",
+                    health_mode=self.settings.kindwise_health_mode,
                 )
             )
         except IntegrityError as exc:
+            constraint_name = integrity_constraint_name(exc)
             self.db.rollback()
+            if constraint_name != IDEMPOTENCY_CONSTRAINT:
+                logger.error(
+                    "unexpected_tree_analysis_integrity_error",
+                    extra={
+                        "request_id": request_id_context.get(),
+                        "endpoint": "/api/v1/tree-analyses",
+                        "path": "/api/v1/tree-analyses",
+                        "principal_id": str(owner_id),
+                        "constraint_name": constraint_name,
+                        "error_type": type(exc.orig).__name__,
+                    },
+                )
+                raise
             concurrent = self.repo.get_by_idempotency(owner_id, idempotency_key)
             if concurrent and concurrent.request_fingerprint == fingerprint:
                 if concurrent.status == "completed" and concurrent.normalized_result:
@@ -178,7 +200,6 @@ class TreeAnalysisService:
                 "Idempotency-Key was already used with a different request.",
                 409,
             ) from exc
-        analysis.numeric_provider_custom_id = int.from_bytes(analysis.id.bytes[:8], "big") & ((1 << 63) - 1)
         idem = IdempotencyRecord(
             principal_id=owner_id,
             method="POST",
@@ -228,7 +249,9 @@ class TreeAnalysisService:
             self.db.commit()
 
             provider_images = [
-                ProviderImage(image.content, image.content_type, f"image-{index + 1}.{image.extension}")
+                ProviderImage(
+                    image.content, image.content_type, f"image-{index + 1}.{image.extension}"
+                )
                 for index, image in enumerate(images)
             ]
             increment("kok_ai_analysis_total", {"outcome": "started"})
@@ -302,7 +325,22 @@ class TreeAnalysisService:
                 "provider": "kindwise_plant_id",
                 "analyzed_at": analyzed_at.isoformat().replace("+00:00", "Z"),
                 "candidates": [candidate_payload(row) for row in rows],
-                "health": result.health,
+                "species_candidates": [candidate_payload(row) for row in rows],
+                "health": result.health
+                or {"status": "not_available", "confidence": None, "summary": None},
+                "capabilities": {
+                    "identification": "available",
+                    "health": "available" if result.health else "not_available",
+                },
+                "attribution": {
+                    "provider": "Kindwise Plant.id",
+                    "provider_id": "kindwise_plant_id",
+                },
+                "uncertainty": {
+                    "confidence_scale": "0_to_1",
+                    "candidate_order": "descending_probability",
+                    "user_confirmation_required": True,
+                },
             }
             analysis.status = "completed"
             analysis.normalized_result = normalized

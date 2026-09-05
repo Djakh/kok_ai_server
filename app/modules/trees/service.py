@@ -2,6 +2,7 @@ import json
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from geoalchemy2 import WKTElement
 from sqlalchemy import text
@@ -96,7 +97,9 @@ class TreeService:
         try:
             parsed = uuid.UUID(asset_id)
         except Exception as exc:
-            raise AppError("invalid_asset_id", "Image value must be uploaded asset id", 422) from exc
+            raise AppError(
+                "invalid_asset_id", "Image value must be uploaded asset id", 422
+            ) from exc
         row = self.db.query(UploadedAsset).filter(UploadedAsset.id == parsed).first()
         if not row:
             raise AppError("asset_not_found", "Uploaded asset not found", 404)
@@ -129,11 +132,15 @@ class TreeService:
             asset.attached_at = datetime.now(timezone.utc)
             asset.expires_at = None
             asset.status = "attached"
-            self.repo.create_image(TreeImage(tree_id=tree.id, uploaded_asset_id=asset.id, kind=kind))
+            self.repo.create_image(
+                TreeImage(tree_id=tree.id, uploaded_asset_id=asset.id, kind=kind)
+            )
 
         point = WKTElement(f"POINT({lng} {lat})", srid=4326)
         self.repo.create_location(
-            TreeLocation(tree_id=tree.id, location=point, accuracy_meters=accuracy_meters, source="mobile")
+            TreeLocation(
+                tree_id=tree.id, location=point, accuracy_meters=accuracy_meters, source="mobile"
+            )
         )
         self.repo.create_event(
             TreeEvent(
@@ -157,14 +164,54 @@ class TreeService:
             raise AppError("not_found", "Tree not found", 404)
         if tree.owner_user_id != actor_id:
             raise AppError("forbidden", "Not tree owner", 403)
-        if "name" in payload and payload["name"] is not None:
-            tree.name = payload["name"]
+        nickname = payload.get("nickname", payload.get("name"))
+        if nickname is not None:
+            tree.name = nickname
+        if "notes" in payload:
+            tree.notes = payload["notes"]
+        if "visibility" in payload:
+            tree.is_public = payload["visibility"] == "public"
+        species = payload.get("confirmed_species")
+        if species:
+            candidate_id = species.get("candidate_id") or species.get("id")
+            candidate = None
+            if candidate_id:
+                if not tree.analysis_id:
+                    raise AppError(
+                        "invalid_species_candidate",
+                        "This tree has no analysis candidates.",
+                        422,
+                    )
+                candidate = self.repo.get_candidate(uuid.UUID(candidate_id), tree.analysis_id)
+                if candidate is None:
+                    raise AppError(
+                        "invalid_species_candidate",
+                        "Candidate does not belong to this tree's analysis.",
+                        422,
+                    )
+            if candidate:
+                tree.confirmed_species = candidate.scientific_name
+                tree.confirmed_common_name = candidate.common_name
+                tree.selected_candidate_id = candidate.id
+                tree.manual_scientific_name = None
+                tree.identification_source = "user_confirmed_ai"
+            else:
+                tree.confirmed_species = species["scientific_name"]
+                tree.confirmed_common_name = species.get("common_name")
+                tree.selected_candidate_id = None
+                tree.manual_scientific_name = species["scientific_name"]
+                tree.identification_source = "user_corrected"
+        event_payload = {
+            key: value
+            for key, value in payload.items()
+            if key != "name" or "nickname" not in payload
+        }
         self.repo.create_event(
             TreeEvent(
                 tree_id=tree.id,
                 actor_user_id=actor_id,
                 event_type=TreeEventType.UPDATED,
-                details_json=json.dumps(payload),
+                details_json=json.dumps(event_payload),
                 created_at=datetime.now(timezone.utc),
             )
         )
@@ -210,15 +257,14 @@ class TreeService:
         nickname: str | None,
         notes: str | None,
         visibility: str,
+        confirmed_common_name: str | None = None,
     ) -> Tree:
         analysis = self._completed_analysis(analysis_id, owner_id)
         from app.common.config import get_settings
 
         if getattr(analysis, "created_at", datetime.now(timezone.utc)) < datetime.now(
             timezone.utc
-        ) - timedelta(
-            hours=get_settings().analysis_ttl_hours
-        ):
+        ) - timedelta(hours=get_settings().analysis_ttl_hours):
             raise AppError("analysis_not_found", "Tree analysis has expired.", 404)
         if self.repo.get_scan_by_analysis(analysis.id):
             raise AppError("INVALID_STATE", "Analysis is already attached to a tree.", 409)
@@ -229,11 +275,14 @@ class TreeService:
         original_lng = float(original.get("longitude", lng))
         d_lat = math.radians(lat - original_lat)
         d_lng = math.radians(lng - original_lng)
-        haversine = math.sin(d_lat / 2) ** 2 + math.cos(math.radians(original_lat)) * math.cos(
-            math.radians(lat)
-        ) * math.sin(d_lng / 2) ** 2
-        distance_meters = 6_371_000 * 2 * math.atan2(
-            math.sqrt(haversine), math.sqrt(max(0.0, 1 - haversine))
+        haversine = (
+            math.sin(d_lat / 2) ** 2
+            + math.cos(math.radians(original_lat))
+            * math.cos(math.radians(lat))
+            * math.sin(d_lng / 2) ** 2
+        )
+        distance_meters = (
+            6_371_000 * 2 * math.atan2(math.sqrt(haversine), math.sqrt(max(0.0, 1 - haversine)))
         )
         allowed_drift = max(
             10.0,
@@ -255,8 +304,13 @@ class TreeService:
                 )
         candidate_species = candidate.scientific_name if candidate else None
         confirmed_species = manual_scientific_name or candidate_species
+        common_name = candidate.common_name if candidate else confirmed_common_name
         identification_source = (
-            "user_confirmed_ai" if candidate else "user_corrected" if manual_scientific_name else "unknown"
+            "user_confirmed_ai"
+            if candidate
+            else "user_corrected"
+            if manual_scientific_name
+            else "unknown"
         )
         health = (analysis.normalized_result or {}).get("health") or {}
         display_name = nickname or confirmed_species or "Unnamed tree"
@@ -266,10 +320,11 @@ class TreeService:
             captured_at=analysis.analyzed_at or datetime.now(timezone.utc),
             status=TreeStatus.PENDING,
             ai_status="completed",
-            ai_model_version=(analysis.provider_metadata or {}).get("speciesModelVersion"),
+            ai_model_version=(analysis.provider_metadata or {}).get("model_version"),
             ai_summary_json=json.dumps(analysis.normalized_result or {}),
             ai_analyzed_at=analysis.analyzed_at,
             confirmed_species=confirmed_species,
+            confirmed_common_name=common_name,
             candidate_species=candidate_species,
             analysis_id=analysis.id,
             selected_candidate_id=selected_candidate_id,
@@ -303,7 +358,9 @@ class TreeService:
                 tree_id=tree.id,
                 actor_user_id=owner_id,
                 event_type=TreeEventType.REGISTERED,
-                details_json=json.dumps({"source": "tree_analysis", "analysis_id": str(analysis.id)}),
+                details_json=json.dumps(
+                    {"source": "tree_analysis", "analysis_id": str(analysis.id)}
+                ),
                 created_at=datetime.now(timezone.utc),
             )
         )
@@ -394,11 +451,29 @@ class TreeService:
 
     @staticmethod
     def scan_to_payload(scan: TreeScan) -> dict:
+        health = scan.health_summary or {"status": "not_available"}
         return {
             "id": str(scan.id),
             "scanned_at": scan.analyzed_at,
             "summary": scan.notes or "Follow-up visual scan",
             "image_url": None,
+            "health": health,
+            "provider": scan.provider_name,
+            "capabilities": {
+                "identification": "available",
+                "health": (
+                    "not_available" if health.get("status") == "not_available" else "available"
+                ),
+            },
+            "attribution": {
+                "provider": "Kindwise Plant.id",
+                "provider_id": scan.provider_name,
+            },
+            "uncertainty": {
+                "confidence_scale": "0_to_1",
+                "user_confirmation_required": True,
+            },
+            "warnings": scan.warnings,
         }
 
     def tree_to_payload(self, tree: Tree) -> dict:
@@ -406,7 +481,11 @@ class TreeService:
         images = self.repo.get_images(tree.id)
         image_map: dict[str, str] = {}
         for img in images:
-            asset = self.db.query(UploadedAsset).filter(UploadedAsset.id == img.uploaded_asset_id).first()
+            asset = (
+                self.db.query(UploadedAsset)
+                .filter(UploadedAsset.id == img.uploaded_asset_id)
+                .first()
+            )
             if asset:
                 image_map[img.kind.value] = asset.url
 
@@ -442,12 +521,23 @@ class TreeService:
             "accepted_sample_count": location_row.accepted_sample_count if location_row else None,
             "rejected_sample_count": location_row.rejected_sample_count if location_row else None,
             "capture_duration_ms": location_row.capture_duration_ms if location_row else None,
-            "best_sample_accuracy_meters": location_row.best_sample_accuracy_meters if location_row else None,
+            "best_sample_accuracy_meters": location_row.best_sample_accuracy_meters
+            if location_row
+            else None,
             "captured_at": location_row.evidence_captured_at if location_row else tree.captured_at,
             "quality": location_row.quality if location_row else "poor",
         }
         selected = self._selected_candidate(tree)
-        result = {
+        identification: dict[str, Any] = {
+            "common_name": selected.common_name if selected else tree.confirmed_common_name,
+            "scientific_name": tree.confirmed_species or tree.candidate_species,
+            "ai_confidence": selected.confidence if selected else None,
+            "ai_provider": "kindwise_plant_id" if tree.analysis_id else None,
+            "source": tree.identification_source,
+            "description": selected.description if selected else None,
+        }
+        location["accuracy_meters"] = location["horizontal_accuracy_meters"]
+        result: dict[str, Any] = {
             "id": str(tree.id),
             "nickname": tree.name,
             "owner_id": str(tree.owner_user_id),
@@ -456,18 +546,31 @@ class TreeService:
             "primary_image_url": primary_image_url,
             "photos": photos,
             "location": location,
-            "identification": {
-                "common_name": selected.common_name if selected else None,
-                "scientific_name": tree.confirmed_species or tree.candidate_species,
-                "ai_confidence": selected.confidence if selected else None,
-                "ai_provider": "kindwise_plant_id" if tree.analysis_id else None,
-                "source": tree.identification_source,
-                "description": selected.description if selected else None,
-            },
+            "identification": identification,
             "notes": tree.notes,
             "visibility": "public" if tree.is_public else "private",
             "health": (ai_summary or {}).get("health") if ai_summary else None,
         }
+        scientific_name = identification["scientific_name"]
+        common_name = identification["common_name"]
+        result.update(
+            {
+                "confirmed_species": (
+                    {"scientific_name": scientific_name, "common_name": common_name}
+                    if scientific_name
+                    else None
+                ),
+                "latest_health": result["health"]
+                or (
+                    {"status": tree.latest_health_status}
+                    if tree.latest_health_status
+                    else {"status": "not_available"}
+                ),
+                "notes": tree.notes or "",
+                "created_at": tree.created_at,
+                "updated_at": tree.updated_at,
+            }
+        )
         return result
 
     def _selected_candidate(self, tree: Tree):
@@ -490,10 +593,16 @@ class TreeService:
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
                 "horizontal_accuracy_meters": location["horizontal_accuracy_meters"],
+                "accuracy_meters": location["accuracy_meters"],
                 "quality": location["quality"],
             },
             "identification": identification,
             "health": detail["health"],
+            "confirmed_species": detail["confirmed_species"],
+            "latest_health": detail["latest_health"],
+            "notes": detail["notes"],
+            "created_at": detail["created_at"],
+            "updated_at": detail["updated_at"],
         }
 
     @staticmethod

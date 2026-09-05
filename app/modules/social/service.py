@@ -1,26 +1,31 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from geoalchemy2 import WKTElement
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.common.config import get_settings
 from app.common.errors.exceptions import AppError
-from app.modules.social.models import SocialPost, SocialPostComment, SocialPostImage
+from app.modules.social.models import SocialPost, SocialPostComment, SocialPostImage, SocialPostLike
 from app.modules.social.repository import SocialRepository
 from app.modules.uploads.models import UploadedAsset
+from app.modules.users.models import User
 
 
 class SocialService:
     def __init__(self, db: Session):
         self.db = db
         self.repo = SocialRepository(db)
+        self.viewer_id: uuid.UUID | None = None
 
     def _asset_for_owner(self, upload_id: str, owner_id: uuid.UUID) -> UploadedAsset:
         try:
             parsed = uuid.UUID(upload_id)
         except Exception as exc:
-            raise AppError("invalid_upload", "upload_id must be UUID from uploads API", 422) from exc
+            raise AppError(
+                "invalid_upload", "upload_id must be UUID from uploads API", 422
+            ) from exc
         asset = self.db.query(UploadedAsset).filter(UploadedAsset.id == parsed).first()
         if not asset:
             raise AppError("upload_not_found", "Upload not found", 404)
@@ -58,18 +63,44 @@ class SocialService:
             asset.attached_at = datetime.now(timezone.utc)
             asset.expires_at = None
             asset.status = "attached"
-            self.repo.create_post_image(SocialPostImage(post_id=post.id, uploaded_asset_id=asset.id))
+            self.repo.create_post_image(
+                SocialPostImage(post_id=post.id, uploaded_asset_id=asset.id)
+            )
         self.db.commit()
         self.db.refresh(post)
         return post
 
-    def patch_post(self, post_id: uuid.UUID, user_id: uuid.UUID, content: str) -> SocialPost:
+    def patch_post(
+        self,
+        post_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str | None,
+        remove_image: bool,
+    ) -> SocialPost:
         post = self.repo.get_post(post_id)
         if not post:
             raise AppError("not_found", "Post not found", 404)
         if post.author_user_id != user_id:
             raise AppError("forbidden", "Not post owner", 403)
-        post.content = content
+        if content is not None:
+            post.content = content
+        if remove_image:
+            image = (
+                self.db.query(SocialPostImage).filter(SocialPostImage.post_id == post.id).first()
+            )
+            if image:
+                asset = (
+                    self.db.query(UploadedAsset)
+                    .filter(UploadedAsset.id == image.uploaded_asset_id)
+                    .first()
+                )
+                self.db.delete(image)
+                if asset:
+                    asset.status = "available"
+                    asset.attached_at = None
+                    asset.expires_at = datetime.now(timezone.utc) + timedelta(
+                        hours=get_settings().abandoned_upload_ttl_hours
+                    )
         self.db.commit()
         self.db.refresh(post)
         return post
@@ -102,6 +133,22 @@ class SocialService:
             .filter(SocialPostImage.post_id == post.id)
             .first()
         )
+        author = self.db.query(User).filter(User.id == post.author_user_id).first()
+        like_count = self.db.query(SocialPostLike).filter(SocialPostLike.post_id == post.id).count()
+        comment_count = (
+            self.db.query(SocialPostComment).filter(SocialPostComment.post_id == post.id).count()
+        )
+        liked_by_me = False
+        if self.viewer_id:
+            liked_by_me = (
+                self.db.query(SocialPostLike)
+                .filter(
+                    SocialPostLike.post_id == post.id,
+                    SocialPostLike.user_id == self.viewer_id,
+                )
+                .first()
+                is not None
+            )
         return {
             "id": str(post.id),
             "author_id": str(post.author_user_id),
@@ -109,6 +156,37 @@ class SocialService:
             "image_url": image.url if image else None,
             "location": loc,
             "created_at": post.created_at,
+            "updated_at": post.updated_at,
+            "author": {
+                "id": str(author.id) if author else str(post.author_user_id),
+                "username": author.username if author else "unknown",
+                "full_name": author.full_name if author else None,
+                "avatar_url": author.avatar_url if author else None,
+            },
+            "like_count": like_count,
+            "comment_count": comment_count,
+            "liked_by_me": liked_by_me,
+            "is_mine": self.viewer_id == post.author_user_id,
+        }
+
+    def comment_payload(self, comment: SocialPostComment) -> dict:
+        author = self.db.query(User).filter(User.id == comment.user_id).first()
+        return {
+            "id": str(comment.id),
+            "author_id": str(comment.user_id),
+            "author": {
+                "id": str(author.id) if author else str(comment.user_id),
+                "username": author.username if author else "unknown",
+                "full_name": author.full_name if author else None,
+                "avatar_url": author.avatar_url if author else None,
+            },
+            "post_id": str(comment.post_id),
+            "content": comment.content,
+            "created_at": comment.created_at,
+            "updated_at": comment.updated_at,
+            "like_count": 0,
+            "liked_by_me": False,
+            "is_mine": self.viewer_id == comment.user_id,
         }
 
     def add_like(self, post_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -123,7 +201,9 @@ class SocialService:
         self.repo.delete_like(user_id, post_id)
         self.db.commit()
 
-    def add_comment(self, post_id: uuid.UUID, user_id: uuid.UUID, content: str) -> SocialPostComment:
+    def add_comment(
+        self, post_id: uuid.UUID, user_id: uuid.UUID, content: str
+    ) -> SocialPostComment:
         row = SocialPostComment(post_id=post_id, user_id=user_id, content=content)
         self.repo.create_comment(row)
         self.db.commit()

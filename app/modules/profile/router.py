@@ -15,9 +15,11 @@ from app.modules.users.service import UserService
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 localization_router = APIRouter(prefix="/localization", tags=["localization"])
+languages_router = APIRouter(tags=["localization"])
 
 
-@router.get("/me/stats")
+@router.get("/stats")
+@router.get("/me/stats", include_in_schema=False)
 def my_stats(
     current: CurrentUser = Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
@@ -25,54 +27,54 @@ def my_stats(
     return success_response(service.stats(current.user.id))
 
 
-@router.get("/me/achievements")
+@router.get("/achievements")
+@router.get("/me/achievements", include_in_schema=False)
 def my_achievements(
     current: CurrentUser = Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
     rows = service.achievements.list_for_user(current.user.id)
-    return success_response(
-        [{"id": str(x.id), "code": x.code, "title": x.title, "description": x.description} for x in rows]
-    )
+    items = [
+        {"id": str(x.id), "code": x.code, "title": x.title, "description": x.description}
+        for x in rows
+    ]
+    return success_response({"items": items, "next_cursor": None})
 
 
-@router.get("/me/posts")
+@router.get("/posts")
+@router.get("/me/posts", include_in_schema=False)
 def my_posts(
     current: CurrentUser = Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
     rows = service.social.list_posts(None, 100, current.user.id, None)
-    return success_response(
-        [
-            {
-                "id": str(x.id),
-                "content": x.content,
-                "created_at": x.created_at,
-            }
-            for x in rows
-        ]
-    )
+    items = [
+        service.post_payload(row, current.user.id)
+        if hasattr(service, "post_payload")
+        else {"id": str(row.id), "content": row.content, "created_at": row.created_at}
+        for row in rows
+    ]
+    return success_response({"items": items, "next_cursor": None})
 
 
-@router.get("/me/liked-posts")
+@router.get("/liked-posts")
+@router.get("/me/liked-posts", include_in_schema=False)
 def liked_posts(
     current: CurrentUser = Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),
 ):
     rows = service.social.liked_posts(current.user.id)
-    return success_response(
-        [
-            {
-                "id": str(x.id),
-                "content": x.content,
-                "created_at": x.created_at,
-            }
-            for x in rows
-        ]
-    )
+    items = [
+        service.post_payload(row, current.user.id)
+        if hasattr(service, "post_payload")
+        else {"id": str(row.id), "content": row.content, "created_at": row.created_at}
+        for row in rows
+    ]
+    return success_response({"items": items, "next_cursor": None})
 
 
-@router.get("/me/settings")
+@router.get("/settings")
+@router.get("/me/settings", include_in_schema=False)
 def settings_get(
     current: CurrentUser = Depends(get_current_user),
     service: UserService = Depends(get_user_service),
@@ -81,7 +83,8 @@ def settings_get(
     return success_response(UserSettingsResponse.model_validate(row).model_dump(mode="json"))
 
 
-@router.patch("/me/settings")
+@router.patch("/settings")
+@router.patch("/me/settings", include_in_schema=False)
 def settings_patch(
     payload: UserSettingsUpdateRequest,
     current: CurrentUser = Depends(get_current_user),
@@ -93,10 +96,22 @@ def settings_patch(
 
 @localization_router.get("/languages")
 def languages():
-    return success_response([{"code": x} for x in SUPPORTED_LANGUAGES])
+    return success_response(
+        {"items": [{"code": x} for x in SUPPORTED_LANGUAGES], "next_cursor": None}
+    )
 
 
-@router.patch("/me/localization")
+@router.get("/localization")
+def localization_get(
+    current: CurrentUser = Depends(get_current_user),
+    service: UserService = Depends(get_user_service),
+):
+    row = service.get_or_create_settings(current.user.id)
+    return success_response(UserSettingsResponse.model_validate(row).model_dump(mode="json"))
+
+
+@router.patch("/localization")
+@router.patch("/me/localization", include_in_schema=False)
 def localization_patch(
     payload: LocalizationUpdateRequest,
     current: CurrentUser = Depends(get_current_user),
@@ -104,3 +119,8 @@ def localization_patch(
 ):
     row = service.update_localization(current.user.id, payload)
     return success_response(UserSettingsResponse.model_validate(row).model_dump(mode="json"))
+
+
+@languages_router.get("/languages")
+def languages_alias():
+    return languages()

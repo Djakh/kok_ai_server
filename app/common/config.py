@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
 
     public_api_base_url: str = "http://localhost:8000"
+    minimum_supported_mobile_version: str = "1.0.0"
+    latest_mobile_version: str = "1.0.0"
+    ios_store_url: str | None = None
+    android_store_url: str | None = None
+    maintenance_mode: bool = False
+    maintenance_message: str | None = None
     kindwise_api_key: str = ""
     kindwise_base_url: str = "https://plant.id/api/v3"
     kindwise_language: Literal["en", "ru", "uz"] = "en"
@@ -98,7 +104,9 @@ class Settings(BaseSettings):
             errors.append("KOK_DATABASE_URL must not point to localhost")
         if "localhost" in self.redis_url:
             errors.append("KOK_REDIS_URL must not point to localhost")
-        if self.jwt_access_secret.startswith("change_me") or self.jwt_refresh_secret.startswith("change_me"):
+        if self.jwt_access_secret.startswith("change_me") or self.jwt_refresh_secret.startswith(
+            "change_me"
+        ):
             errors.append("JWT secrets must be changed")
         if not self.s3_bucket or not self.s3_access_key or not self.s3_secret_key:
             errors.append("S3-compatible object storage settings are required")
@@ -108,6 +116,10 @@ class Settings(BaseSettings):
             errors.append("KOK_KINDWISE_BASE_URL must use HTTPS")
         if not self.public_api_base_url.startswith("https://"):
             errors.append("KOK_PUBLIC_API_BASE_URL must use HTTPS")
+        if self.ios_store_url and not self.ios_store_url.startswith("https://"):
+            errors.append("KOK_IOS_STORE_URL must use HTTPS")
+        if self.android_store_url and not self.android_store_url.startswith("https://"):
+            errors.append("KOK_ANDROID_STORE_URL must use HTTPS")
         if self.kindwise_health_mode not in {"off", "auto", "all"}:
             errors.append("KOK_KINDWISE_HEALTH_MODE must be off, auto, or all")
         if self.ai_max_request_bytes > 50_000_000:

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 class JSONFormatter(logging.Formatter):
     _structured_fields = (
         "request_id",
+        "endpoint",
         "method",
         "path",
         "status",
@@ -15,6 +16,7 @@ class JSONFormatter(logging.Formatter):
         "capability",
         "error_category",
         "error_type",
+        "constraint_name",
     )
 
     def format(self, record: logging.LogRecord) -> str:
@@ -38,3 +40,5 @@ def configure_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.handlers = [handler]
     root_logger.setLevel(logging.INFO)
+    logging.getLogger("uvicorn.access").disabled = True
+    logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -1,8 +1,9 @@
 from fastapi import APIRouter
 
 from app.modules.auth.router import router as auth_router
+from app.modules.mobile_support.router import router as mobile_support_router
 from app.modules.notifications.router import router as notifications_router
-from app.modules.profile.router import localization_router
+from app.modules.profile.router import languages_router, localization_router
 from app.modules.profile.router import router as profile_router
 from app.modules.social.router import router as social_router
 from app.modules.tree_analyses.router import router as tree_analyses_router
@@ -15,8 +16,10 @@ api_router.include_router(auth_router)
 api_router.include_router(users_router)
 api_router.include_router(profile_router)
 api_router.include_router(localization_router)
+api_router.include_router(languages_router)
 api_router.include_router(uploads_router)
 api_router.include_router(tree_analyses_router)
+api_router.include_router(mobile_support_router)
 api_router.include_router(trees_router)
 api_router.include_router(social_router)
 api_router.include_router(notifications_router)
