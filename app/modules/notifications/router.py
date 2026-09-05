@@ -16,21 +16,21 @@ def list_notifications(
     service: NotificationService = Depends(get_notification_service),
 ):
     rows = service.repo.list_for_user(current.user.id)
-    return success_response(
-        [
-            {
-                "id": str(x.id),
-                "title": x.title,
-                "body": x.body,
-                "is_read": x.is_read,
-                "created_at": x.created_at,
-            }
-            for x in rows
-        ]
-    )
+    items = [
+        {
+            "id": str(x.id),
+            "title": x.title,
+            "body": x.body,
+            "is_read": x.is_read,
+            "created_at": x.created_at,
+        }
+        for x in rows
+    ]
+    return success_response({"items": items, "next_cursor": None})
 
 
-@router.patch("/read-all")
+@router.post("/read-all")
+@router.patch("/read-all", include_in_schema=False)
 def read_all(
     current: CurrentUser = Depends(get_current_user),
     service: NotificationService = Depends(get_notification_service),

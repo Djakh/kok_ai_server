@@ -52,7 +52,6 @@ class FakeSocialService:
         return row
 
 
-
 def test_social_posts_list(client):
     client.app.dependency_overrides[get_social_service] = lambda: FakeSocialService()
     resp = client.get("/api/v1/social/posts?limit=1")
@@ -65,7 +64,8 @@ def test_social_multipart_create(client, monkeypatch):
         def __init__(self, db):  # noqa: ANN001
             self.db = db
 
-        def upload_single(self, file, owner_id):  # noqa: ANN001
+        def upload_single(self, file, owner_id, purpose="general"):  # noqa: ANN001
+            assert purpose == "social_post"
             return type("Upload", (), {"id": uuid.uuid4()})()
 
     client.app.dependency_overrides[get_social_service] = lambda: FakeSocialService()
@@ -90,5 +90,7 @@ def test_social_comment_create_then_list(client):
 
     list_resp = client.get(f"/api/v1/social/posts/{post_id}/comments")
     assert list_resp.status_code == 200
-    assert len(list_resp.json()["data"]) == 1
-    assert list_resp.json()["data"][0]["author_id"] == create_resp.json()["data"]["author_id"]
+    assert len(list_resp.json()["data"]["items"]) == 1
+    assert (
+        list_resp.json()["data"]["items"][0]["author_id"] == create_resp.json()["data"]["author_id"]
+    )

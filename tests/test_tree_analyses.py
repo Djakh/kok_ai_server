@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import UploadFile
 from PIL import Image
+from sqlalchemy.exc import IntegrityError
 
 from app.common.config import Settings
 from app.common.errors.exceptions import AppError
@@ -26,7 +27,7 @@ from app.modules.tree_analyses.provider import (
     ProviderImage,
     clamp_confidence,
 )
-from app.modules.tree_analyses.service import TreeAnalysisService
+from app.modules.tree_analyses.service import TreeAnalysisService, request_fingerprint
 from app.modules.trees.dependencies import get_tree_service
 from app.modules.trees.service import TreeService
 
@@ -119,9 +120,9 @@ async def test_kindwise_exact_server_request_and_empty_candidates() -> None:
         assert request.headers["Api-Key"] == "server-secret"
         assert request.url.params["details"].startswith("common_names,description,taxonomy")
         body = await request.aread()
-        assert b'custom_id' in body and b'12345' in body
-        assert b'suggestion_filter' in body and b'tree' in body
-        assert b'classification_level' in body and b'species' in body
+        assert b"custom_id" in body and b"12345" in body
+        assert b"suggestion_filter" in body and b"tree" in body
+        assert b"classification_level" in body and b"species" in body
         assert body.count(b'filename="') == 2
         return httpx.Response(
             201,
@@ -305,6 +306,7 @@ async def test_analysis_idempotency_replays_and_conflicts() -> None:
 
     service = TreeAnalysisService.__new__(TreeAnalysisService)
     service.repo = FakeRepo()
+
     class EmptyQuery:
         def filter(self, *args):  # noqa: ANN002
             return self
@@ -320,8 +322,6 @@ async def test_analysis_idempotency_replays_and_conflicts() -> None:
     service.settings = Settings(_env_file=None)
     image = _prepare_one(jpeg_bytes(), "tree.jpg", service.settings)
 
-    from app.modules.tree_analyses.service import request_fingerprint
-
     evidence = {"latitude": 41.3, "longitude": 69.2}
     existing.request_fingerprint = request_fingerprint([image], ["whole_tree"], evidence)
     replayed, was_replayed = await service.analyze(
@@ -333,6 +333,116 @@ async def test_analysis_idempotency_replays_and_conflicts() -> None:
     with pytest.raises(AppError) as exc_info:
         await service.analyze(owner_id, [image], ["leaf"], evidence, "mobile-1")
     assert exc_info.value.code == "idempotency_conflict"
+
+
+class _EmptyIdempotencyQuery:
+    def filter(self, *args):  # noqa: ANN002
+        return self
+
+    def with_for_update(self):
+        return self
+
+    def first(self):
+        return None
+
+
+def _integrity_error(constraint_name: str) -> IntegrityError:
+    original = RuntimeError("database constraint failure")
+    original.diag = SimpleNamespace(constraint_name=constraint_name)  # type: ignore[attr-defined]
+    return IntegrityError("INSERT", {}, original)
+
+
+@pytest.mark.asyncio
+async def test_non_idempotency_integrity_error_is_not_mislabeled(caplog) -> None:  # noqa: ANN001
+    owner_id = uuid.uuid4()
+    error = _integrity_error("tree_analyses_numeric_provider_custom_id_not_null")
+
+    class FakeRepo:
+        @staticmethod
+        def get_by_idempotency(owner_id, key):  # noqa: ANN001
+            return None
+
+        @staticmethod
+        def create(row):  # noqa: ANN001
+            raise error
+
+    service = TreeAnalysisService.__new__(TreeAnalysisService)
+    service.repo = FakeRepo()
+    service.db = SimpleNamespace(
+        query=lambda model: _EmptyIdempotencyQuery(),
+        rollback=lambda: None,
+    )
+    service.provider = SimpleNamespace()
+    service.settings = Settings(_env_file=None)
+    image = _prepare_one(jpeg_bytes(), "tree.jpg", service.settings)
+
+    with caplog.at_level("ERROR"), pytest.raises(IntegrityError) as exc_info:
+        await service.analyze(
+            owner_id,
+            [image],
+            ["whole_tree"],
+            {"latitude": 41.3, "longitude": 69.2},
+            "fresh-key",
+        )
+
+    assert exc_info.value is error
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "unexpected_tree_analysis_integrity_error"
+    )
+    assert record.constraint_name == "tree_analyses_numeric_provider_custom_id_not_null"
+    assert record.principal_id == str(owner_id)
+    assert record.endpoint == "/api/v1/tree-analyses"
+    assert record.error_type == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_constraint_race_remains_request_in_progress() -> None:
+    owner_id = uuid.uuid4()
+    settings = Settings(_env_file=None)
+    image = _prepare_one(jpeg_bytes(), "tree.jpg", settings)
+    evidence = {"latitude": 41.3, "longitude": 69.2}
+    fingerprint = request_fingerprint([image], ["whole_tree"], evidence)
+    concurrent = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="validating",
+        normalized_result=None,
+        request_fingerprint=fingerprint,
+    )
+
+    class FakeRepo:
+        lookups = 0
+
+        @classmethod
+        def get_by_idempotency(cls, owner_id, key):  # noqa: ANN001
+            cls.lookups += 1
+            return None if cls.lookups == 1 else concurrent
+
+        @staticmethod
+        def create(row):  # noqa: ANN001
+            raise _integrity_error("uq_tree_analyses_owner_idempotency")
+
+    service = TreeAnalysisService.__new__(TreeAnalysisService)
+    service.repo = FakeRepo()
+    service.db = SimpleNamespace(
+        query=lambda model: _EmptyIdempotencyQuery(),
+        rollback=lambda: None,
+    )
+    service.provider = SimpleNamespace()
+    service.settings = settings
+
+    with pytest.raises(AppError) as exc_info:
+        await service.analyze(
+            owner_id,
+            [image],
+            ["whole_tree"],
+            evidence,
+            "racing-key",
+        )
+
+    assert exc_info.value.code == "request_in_progress"
+    assert exc_info.value.details == {"analysis_id": str(concurrent.id)}
 
 
 def test_completed_analysis_cannot_be_attached_twice() -> None:
@@ -409,7 +519,10 @@ def test_analysis_api_valid_multipart_and_provider_failure(client) -> None:
             ("photos", ("tree.jpg", b"fake", "image/jpeg")),
             ("photos", ("leaf.jpg", jpeg_bytes(), "image/jpeg")),
         ],
-        data={"photo_types": ["whole_tree", "leaf"], "location_evidence": json.dumps(location_evidence())},
+        data={
+            "photo_types": ["whole_tree", "leaf"],
+            "location_evidence": json.dumps(location_evidence()),
+        },
         headers={"Idempotency-Key": "analysis-bad"},
     )
     assert bad.status_code == 415
@@ -427,7 +540,10 @@ def test_analysis_api_valid_multipart_and_provider_failure(client) -> None:
             ("photos", ("tree.jpg", jpeg_bytes(), "image/jpeg")),
             ("photos", ("leaf.jpg", jpeg_bytes(), "image/jpeg")),
         ],
-        data={"photo_types": ["whole_tree", "leaf"], "location_evidence": json.dumps(location_evidence())},
+        data={
+            "photo_types": ["whole_tree", "leaf"],
+            "location_evidence": json.dumps(location_evidence()),
+        },
         headers={"Idempotency-Key": "analysis-fail"},
     )
     assert failed.status_code == 503

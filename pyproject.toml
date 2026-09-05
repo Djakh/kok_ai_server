@@ -1,6 +1,6 @@
 [project]
 name = "kok-ai-server"
-version = "1.0.0"
+version = "1.3.0"
 description = "KOK.AI backend"
 readme = "README.md"
 requires-python = ">=3.12"

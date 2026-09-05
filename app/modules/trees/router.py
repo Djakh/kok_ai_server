@@ -22,6 +22,7 @@ from app.common.rate_limit.dependencies import AnalysisRateLimit, WriteRateLimit
 from app.common.responses.envelope import success_response
 from app.common.security.dependencies import CurrentUser, get_current_user, require_roles
 from app.modules.social.models import SocialPost
+from app.modules.social.service import SocialService
 from app.modules.tree_analyses.dependencies import get_tree_analysis_service
 from app.modules.tree_analyses.images import prepare_images, validate_photo_types
 from app.modules.tree_analyses.schemas import LocationEvidence
@@ -119,24 +120,50 @@ async def register_tree(
 @router.get("/map")
 def trees_map(
     bbox: str | None = None,
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
     center: str | None = None,
     radius: float | None = None,
     status: str | None = None,
     current: CurrentUser = Depends(get_current_user),
     service: TreeService = Depends(get_tree_service),
 ):
-    del current
-    if bbox:
-        min_lng, min_lat, max_lng, max_lat = [float(x) for x in bbox.split(",")]
-        rows = service.repo.map_bbox(min_lng, min_lat, max_lng, max_lat, status)
+    if bbox or all(value is not None for value in (south, west, north, east)):
+        try:
+            min_lng, min_lat, max_lng, max_lat = (
+                [float(x) for x in bbox.split(",")]
+                if bbox
+                else [cast(float, west), cast(float, south), cast(float, east), cast(float, north)]
+            )
+        except (TypeError, ValueError) as exc:
+            raise AppError("invalid_query", "bbox must be west,south,east,north.", 422) from exc
+        if not (-180 <= min_lng < max_lng <= 180 and -90 <= min_lat < max_lat <= 90):
+            raise AppError("invalid_query", "Bounding-box coordinates are invalid.", 422)
+        if (max_lng - min_lng) * (max_lat - min_lat) > 4:
+            raise AppError("map_area_too_large", "Bounding-box area exceeds 4 square degrees.", 422)
+        rows = service.repo.map_bbox(min_lng, min_lat, max_lng, max_lat, status, current.user.id)
     elif center and radius:
-        lat, lng = [float(x) for x in center.split(",")]
-        rows = service.repo.map_center_radius(lat, lng, radius, status)
+        try:
+            lat, lng = [float(x) for x in center.split(",")]
+        except ValueError as exc:
+            raise AppError("invalid_query", "center must be latitude,longitude.", 422) from exc
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise AppError("invalid_query", "Center coordinates are invalid.", 422)
+        if not 0 < radius <= 50_000:
+            raise AppError("invalid_query", "radius must be between 0 and 50000 meters.", 422)
+        rows = service.repo.map_center_radius(lat, lng, radius, status, current.user.id)
     else:
-        from app.common.errors.exceptions import AppError
-
         raise AppError("invalid_query", "Provide bbox or center+radius", 422)
-    return success_response([service.tree_to_payload(x) for x in rows])
+    return success_response(
+        {
+            "items": [service.tree_to_payload(x) for x in rows],
+            "clusters": [],
+            "mode": "markers",
+            "next_cursor": None,
+        }
+    )
 
 
 @router.post("", dependencies=[WriteRateLimit])
@@ -153,19 +180,18 @@ async def create_tree_from_analysis(
     )
     if replay:
         return success_response(replay)
-    record = service.idempotency_begin(
-        current.user.id, "/api/v1/trees", idempotency_key, body_hash
-    )
+    record = service.idempotency_begin(current.user.id, "/api/v1/trees", idempotency_key, body_hash)
     tree = service.create_from_analysis(
         current.user.id,
         payload.analysis_id,
         payload.selected_candidate_id,
         payload.manual_scientific_name,
-        payload.location_evidence.model_dump(mode="json"),
+        payload.location_evidence.model_dump(mode="json"),  # type: ignore[union-attr]
         payload.duplicate_check_status,
         payload.nickname,
         payload.notes,
         payload.visibility,
+        payload.confirmed_species.common_name if payload.confirmed_species else None,
     )
     response_payload = service.tree_to_payload(tree)
     service.idempotency_complete(record, tree.id, response_payload)
@@ -177,6 +203,7 @@ def nearby_trees(
     latitude: float,
     longitude: float,
     radius_meters: float = 20,
+    scientific_name: str | None = None,
     current: CurrentUser = Depends(get_current_user),
     service: TreeService = Depends(get_tree_service),
 ):
@@ -191,7 +218,14 @@ def nearby_trees(
         if tree is None:
             continue
         detail = service.tree_to_payload(tree)
-        items.append(
+        if (
+            scientific_name
+            and (detail["identification"]["scientific_name"] or "").casefold()
+            != scientific_name.casefold()
+        ):
+            continue
+        item = service.tree_to_summary(tree)
+        item.update(
             {
                 "tree_id": str(tree.id),
                 "display_name": tree.name,
@@ -202,7 +236,8 @@ def nearby_trees(
                 "registered_at": tree.created_at,
             }
         )
-    return success_response({"items": items})
+        items.append(item)
+    return success_response({"items": items, "next_cursor": None})
 
 
 @router.get("")
@@ -272,13 +307,20 @@ def list_trees(
 @router.post("/{tree_id}/scans", dependencies=[AnalysisRateLimit])
 async def create_tree_scan(
     tree_id: uuid.UUID,
-    photos: Annotated[list[UploadFile], File()],
-    photo_types: Annotated[list[str], Form()],
+    photos: Annotated[list[UploadFile] | None, File()] = None,
+    photo_types: Annotated[list[str] | None, Form()] = None,
+    images: Annotated[list[UploadFile] | None, File()] = None,
+    organs: Annotated[list[str] | None, Form()] = None,
     location_evidence: Annotated[str | None, Form()] = None,
+    latitude: Annotated[float | None, Form()] = None,
+    longitude: Annotated[float | None, Form()] = None,
+    accuracy_meters: Annotated[float | None, Form(gt=0)] = None,
     run_analysis: Annotated[bool, Form()] = True,
     captured_at: Annotated[datetime | None, Form()] = None,
     notes: Annotated[str | None, Form(max_length=2000)] = None,
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=160)] = "",
+    idempotency_key: Annotated[
+        str, Header(alias="Idempotency-Key", min_length=1, max_length=160)
+    ] = "",
     current: CurrentUser = Depends(get_current_user),
     service: TreeService = Depends(get_tree_service),
     analysis_service: TreeAnalysisService = Depends(get_tree_analysis_service),
@@ -289,14 +331,40 @@ async def create_tree_scan(
     if tree.owner_user_id != current.user.id:
         raise AppError("FORBIDDEN", "Not tree owner.", 403)
     if not run_analysis:
-        raise AppError("validation_error", "run_analysis=false is not supported for photo scans.", 422)
+        raise AppError(
+            "validation_error", "run_analysis=false is not supported for photo scans.", 422
+        )
     if not idempotency_key:
         raise AppError("validation_error", "Idempotency-Key is required.", 422)
+    submitted_images = photos or images or []
+    submitted_types = photo_types or organs or []
+    if photos and images:
+        raise AppError("validation_error", "Send photos or images, not both.", 422)
+    if photo_types and organs:
+        raise AppError("validation_error", "Send photo_types or organs, not both.", 422)
+    normalized_aliases = [
+        "whole_tree" if value.strip().lower() == "auto" else value for value in submitted_types
+    ]
     if location_evidence:
         try:
             evidence = LocationEvidence.model_validate(json.loads(location_evidence))
         except Exception as exc:
-            raise AppError("invalid_location_evidence", "Location evidence is invalid.", 422) from exc
+            raise AppError(
+                "invalid_location_evidence", "Location evidence is invalid.", 422
+            ) from exc
+    elif latitude is not None and longitude is not None:
+        accuracy = accuracy_meters or 1.0
+        evidence = LocationEvidence(
+            latitude=latitude,
+            longitude=longitude,
+            horizontal_accuracy_meters=accuracy,
+            accepted_sample_count=3,
+            rejected_sample_count=0,
+            capture_duration_ms=1,
+            best_sample_accuracy_meters=accuracy,
+            captured_at=captured_at or datetime.now().astimezone(),
+            quality="poor" if accuracy_meters is None else "acceptable",
+        )
     else:
         latitude, longitude = service._read_lat_lng(tree_id)
         now = datetime.now().astimezone()
@@ -311,8 +379,8 @@ async def create_tree_scan(
             captured_at=now,
             quality="poor",
         )
-    prepared = await prepare_images(photos, get_settings(), minimum=2)
-    normalized_types = validate_photo_types(photo_types, len(prepared))
+    prepared = await prepare_images(submitted_images, get_settings(), minimum=2)
+    normalized_types = validate_photo_types(normalized_aliases, len(prepared))
     analysis, _ = await analysis_service.analyze(
         current.user.id,
         prepared,
@@ -320,9 +388,7 @@ async def create_tree_scan(
         evidence.model_dump(mode="json"),
         idempotency_key,
     )
-    scan = service.attach_scan(
-        tree_id, current.user.id, analysis.id, captured_at, notes
-    )
+    scan = service.attach_scan(tree_id, current.user.id, analysis.id, captured_at, notes)
     return success_response(service.scan_to_payload(scan), status_code=201)
 
 
@@ -341,7 +407,13 @@ def list_tree_scans(
         raise AppError("FORBIDDEN", "Not tree owner.", 403)
     bounded_limit = min(max(limit, 1), 100)
     rows = service.repo.list_scans(tree_id, _blank_to_none(cursor), bounded_limit)
-    return success_response({"items": [service.scan_to_payload(scan) for scan in rows]})
+    next_cursor = None
+    if rows:
+        last = rows[-1]
+        next_cursor = encode_cursor(last.analyzed_at, str(last.id))
+    return success_response(
+        {"items": [service.scan_to_payload(scan) for scan in rows], "next_cursor": next_cursor}
+    )
 
 
 @router.get("/{tree_id}")
@@ -361,7 +433,11 @@ def tree_patch(
     current: CurrentUser = Depends(get_current_user),
     service: TreeService = Depends(get_tree_service),
 ):
-    tree = service.patch_tree(tree_id, current.user.id, payload.model_dump(exclude_none=True))
+    tree = service.patch_tree(
+        tree_id,
+        current.user.id,
+        payload.model_dump(mode="json", exclude_unset=True),
+    )
     return success_response(service.tree_to_payload(tree))
 
 
@@ -382,7 +458,7 @@ def tree_timeline(
         }
         for x in items
     ]
-    return success_response(data)
+    return success_response({"items": data, "next_cursor": None})
 
 
 @router.post("/{tree_id}/verify")
@@ -410,13 +486,7 @@ def tree_posts(
         .order_by(SocialPost.created_at.desc())
         .all()
     )
-    data = [
-        {
-            "id": str(x.id),
-            "content": x.content,
-            "author_id": str(x.author_user_id),
-            "created_at": x.created_at,
-        }
-        for x in items
-    ]
-    return success_response(data)
+    social = SocialService(db)
+    social.viewer_id = current.user.id
+    data = [social.post_payload(item) for item in items]
+    return success_response({"items": data, "next_cursor": None})

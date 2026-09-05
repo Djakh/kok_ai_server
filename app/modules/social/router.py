@@ -32,6 +32,33 @@ from app.modules.uploads.service import UploadService
 router = APIRouter(prefix="/social", tags=["social"])
 
 
+def _set_viewer(service: SocialService, user_id: uuid.UUID) -> None:
+    service.viewer_id = user_id
+    service.repo.viewer_id = user_id
+
+
+def _comment_payload(service: SocialService, row) -> dict:  # noqa: ANN001
+    if hasattr(service, "comment_payload"):
+        return service.comment_payload(row)
+    return {
+        "id": str(row.id),
+        "author_id": str(row.user_id),
+        "author": {
+            "id": str(row.user_id),
+            "username": "unknown",
+            "full_name": None,
+            "avatar_url": None,
+        },
+        "post_id": str(row.post_id),
+        "content": row.content,
+        "created_at": row.created_at,
+        "updated_at": getattr(row, "updated_at", row.created_at),
+        "like_count": 0,
+        "liked_by_me": False,
+        "is_mine": service.viewer_id == row.user_id,
+    }
+
+
 @router.post("/posts", dependencies=[WriteRateLimit])
 async def create_post(
     request: Request,
@@ -40,6 +67,7 @@ async def create_post(
     service: SocialService = Depends(get_social_service),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
+    _set_viewer(service, current.user.id)
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("application/json"):
         body_hash = await get_body_hash(request)
@@ -75,7 +103,7 @@ async def create_post(
         created_at_text = cast(str, created_at)
         upload_id = None
         if isinstance(image, UploadFile):
-            row = UploadService(db).upload_single(image, current.user.id)
+            row = UploadService(db).upload_single(image, current.user.id, "social_post")
             upload_id = str(row.id)
         post = service.create_post(
             user_id=current.user.id,
@@ -101,7 +129,7 @@ def list_posts(
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
-    del current
+    _set_viewer(service, current.user.id)
     near_parsed = None
     if near:
         lat, lng, radius = near.split(",")
@@ -113,7 +141,10 @@ def list_posts(
     if rows:
         last = rows[-1]
         next_cursor = encode_cursor(last.created_at, str(last.id))
-    return success_response(payload, meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim})
+    return success_response(
+        {"items": payload, "next_cursor": next_cursor},
+        meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim},
+    )
 
 
 @router.get("/posts/{post_id}")
@@ -122,7 +153,7 @@ def get_post(
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
-    del current
+    _set_viewer(service, current.user.id)
     post = service.repo.get_post(post_id)
     from app.common.errors.exceptions import AppError
 
@@ -138,7 +169,13 @@ def patch_post(
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
-    post = service.patch_post(post_id, current.user.id, payload.content)
+    _set_viewer(service, current.user.id)
+    post = service.patch_post(
+        post_id,
+        current.user.id,
+        payload.content,
+        payload.remove_image,
+    )
     return success_response(service.post_payload(post))
 
 
@@ -181,9 +218,8 @@ def list_likes(
     del current
     repo = SocialRepository(db)
     rows = repo.likes(post_id)
-    return success_response(
-        [{"id": str(x.id), "user_id": str(x.user_id), "created_at": x.created_at} for x in rows]
-    )
+    items = [{"id": str(x.id), "user_id": str(x.user_id), "created_at": x.created_at} for x in rows]
+    return success_response({"items": items, "next_cursor": None})
 
 
 @router.post("/posts/{post_id}/comments", dependencies=[WriteRateLimit])
@@ -193,17 +229,9 @@ def create_comment(
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
+    _set_viewer(service, current.user.id)
     row = service.add_comment(post_id, current.user.id, payload.content)
-    return success_response(
-        {
-            "id": str(row.id),
-            "author_id": str(row.user_id),
-            "post_id": str(row.post_id),
-            "content": row.content,
-            "created_at": row.created_at,
-        },
-        status_code=201,
-    )
+    return success_response(_comment_payload(service, row), status_code=201)
 
 
 @router.get("/posts/{post_id}/comments")
@@ -212,27 +240,24 @@ def list_comments(
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
-    del current
+    _set_viewer(service, current.user.id)
     rows = service.repo.list_comments(post_id)
     return success_response(
-        [
-            {
-                "id": str(x.id),
-                "author_id": str(x.user_id),
-                "post_id": str(x.post_id),
-                "content": x.content,
-                "created_at": x.created_at,
-            }
-            for x in rows
-        ]
+        {"items": [_comment_payload(service, row) for row in rows], "next_cursor": None}
     )
 
 
-@router.delete("/comments/{comment_id}", dependencies=[WriteRateLimit])
+@router.delete("/posts/{post_id}/comments/{comment_id}", dependencies=[WriteRateLimit])
+@router.delete("/comments/{comment_id}", dependencies=[WriteRateLimit], include_in_schema=False)
 def delete_comment(
     comment_id: uuid.UUID,
+    post_id: uuid.UUID | None = None,
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
+    if post_id:
+        row = service.repo.get_comment(comment_id)
+        if not row or row.post_id != post_id:
+            raise AppError("not_found", "Comment not found", 404)
     service.delete_comment(comment_id, current.user.id)
     return success_response({"deleted": True})

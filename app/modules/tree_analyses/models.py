@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,7 +25,9 @@ from app.common.db.base import Base, TimestampMixin, UUIDPKMixin
 class TreeAnalysis(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "tree_analyses"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "idempotency_key", name="uq_tree_analyses_owner_idempotency"),
+        UniqueConstraint(
+            "owner_user_id", "idempotency_key", name="uq_tree_analyses_owner_idempotency"
+        ),
         CheckConstraint(
             "(latitude IS NULL AND longitude IS NULL) OR "
             "(latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
@@ -47,7 +50,12 @@ class TreeAnalysis(UUIDPKMixin, TimestampMixin, Base):
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    numeric_provider_custom_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    numeric_provider_custom_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        unique=True,
+        server_default=text("nextval('tree_analysis_provider_custom_id_seq')"),
+    )
     location_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     provider_name: Mapped[str] = mapped_column(String(64), default="kindwise_plant_id")
     provider_is_plant_binary: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

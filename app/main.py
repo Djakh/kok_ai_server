@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -22,6 +22,16 @@ settings = get_settings()
 configure_logging()
 
 
+def _version_tuple(value: str) -> tuple[int, int, int] | None:
+    try:
+        parts = value.split(".")
+        if len(parts) != 3:
+            return None
+        return tuple(int(part) for part in parts)  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     production_errors = settings.production_config_errors()
@@ -35,10 +45,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             pass
     yield
 
+
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
-    version="1.1.0",
+    version="1.3.0",
     description=(
         "KOK.AI API. Species and optional visible-condition inference are provided by "
         "third-party Kindwise Plant.id; provider credentials and raw responses are never exposed."
@@ -93,10 +104,43 @@ def ready(request: Request):
 
 
 @app.get(f"{settings.api_prefix}/version", tags=["operations"])
-def version():
+def version(
+    platform: str | None = Query(default=None, pattern="^(ios|android)$"),
+    current_version: str | None = Query(default=None, pattern=r"^\d+\.\d+\.\d+$"),
+):
     from app.common.responses.envelope import success_response
 
-    return success_response({"version": app.version, "provider": "kindwise_plant_id"})
+    store_url = (
+        settings.ios_store_url
+        if platform == "ios"
+        else settings.android_store_url
+        if platform == "android"
+        else None
+    )
+    installed = _version_tuple(current_version) if current_version else None
+    minimum = _version_tuple(settings.minimum_supported_mobile_version)
+    force_upgrade = bool(installed and minimum and installed < minimum)
+    return success_response(
+        {
+            "version": app.version,
+            "minimum_supported_version": settings.minimum_supported_mobile_version,
+            "latest_version": settings.latest_mobile_version,
+            "force_upgrade": force_upgrade,
+            "platform": platform,
+            "store_url": store_url,
+            "store_urls": {
+                "ios": settings.ios_store_url,
+                "android": settings.android_store_url,
+            },
+            "maintenance": {
+                "active": settings.maintenance_mode,
+                "message": settings.maintenance_message,
+            },
+            "maintenance_status": "active" if settings.maintenance_mode else "operational",
+            "message": settings.maintenance_message,
+            "provider": "kindwise_plant_id",
+        }
+    )
 
 
 @app.get("/metrics", tags=["operations"], include_in_schema=False)

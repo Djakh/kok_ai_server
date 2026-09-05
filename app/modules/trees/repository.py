@@ -98,14 +98,22 @@ class TreeRepository:
             qry = qry.order_by(Tree.created_at.desc(), Tree.id.desc())
         return qry.limit(limit).all()
 
-    def map_bbox(self, min_lng: float, min_lat: float, max_lng: float, max_lat: float, status: str | None):
+    def map_bbox(
+        self,
+        min_lng: float,
+        min_lat: float,
+        max_lng: float,
+        max_lat: float,
+        status: str | None,
+        viewer_id: uuid.UUID,
+    ):
         sql = text(
             """
             SELECT t.id
             FROM trees t
             JOIN tree_locations tl ON tl.tree_id=t.id
             WHERE t.deleted_at IS NULL
-            AND t.is_public IS TRUE
+            AND (t.is_public IS TRUE OR t.owner_user_id=:viewer_id)
             AND (:status IS NULL OR t.status=:status)
             AND ST_Intersects(
               tl.location::geometry,
@@ -121,6 +129,7 @@ class TreeRepository:
                 "max_lng": max_lng,
                 "max_lat": max_lat,
                 "status": status,
+                "viewer_id": viewer_id,
             },
         ).all()
         ids = [x[0] for x in rows]
@@ -128,17 +137,24 @@ class TreeRepository:
             return []
         return self.db.query(Tree).filter(Tree.id.in_(ids)).all()
 
-    def map_center_radius(self, lat: float, lng: float, radius: float, status: str | None):
+    def map_center_radius(
+        self,
+        lat: float,
+        lng: float,
+        radius: float,
+        status: str | None,
+        viewer_id: uuid.UUID,
+    ):
         point = ST_MakePoint(lng, lat)
         qry = self.db.query(Tree).join(TreeLocation, TreeLocation.tree_id == Tree.id)
         qry = qry.filter(
             Tree.deleted_at.is_(None),
-            Tree.is_public.is_(True),
+            or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
             ST_DWithin(TreeLocation.location, point, radius),
         )
         if status:
             qry = qry.filter(Tree.status == TreeStatus(status))
-        return qry.limit(200).all()
+        return qry.all()
 
     def list_events(self, tree_id: uuid.UUID) -> list[TreeEvent]:
         return (
@@ -184,9 +200,7 @@ class TreeRepository:
             .all()
         )
 
-    def nearby(
-        self, latitude: float, longitude: float, radius_meters: float, viewer_id: uuid.UUID
-    ):
+    def nearby(self, latitude: float, longitude: float, radius_meters: float, viewer_id: uuid.UUID):
         return self.db.execute(
             text(
                 """

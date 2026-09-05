@@ -6,12 +6,14 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.common.pagination.cursor import decode_cursor
+from app.modules.mobile_support.models import UserBlock
 from app.modules.social.models import SocialPost, SocialPostComment, SocialPostImage, SocialPostLike
 
 
 class SocialRepository:
     def __init__(self, db: Session):
         self.db = db
+        self.viewer_id: uuid.UUID | None = None
 
     def create_post(self, row: SocialPost) -> SocialPost:
         self.db.add(row)
@@ -24,7 +26,11 @@ class SocialRepository:
         return row
 
     def get_post(self, post_id: uuid.UUID) -> SocialPost | None:
-        return self.db.query(SocialPost).filter(SocialPost.id == post_id, SocialPost.deleted_at.is_(None)).first()
+        return (
+            self.db.query(SocialPost)
+            .filter(SocialPost.id == post_id, SocialPost.deleted_at.is_(None))
+            .first()
+        )
 
     def list_posts(
         self,
@@ -34,6 +40,17 @@ class SocialRepository:
         near: tuple[float, float, float] | None,
     ) -> list[SocialPost]:
         q = self.db.query(SocialPost).filter(SocialPost.deleted_at.is_(None))
+        if self.viewer_id:
+            blocked_by_viewer = self.db.query(UserBlock.blocked_user_id).filter(
+                UserBlock.blocker_user_id == self.viewer_id
+            )
+            viewers_blocking_me = self.db.query(UserBlock.blocker_user_id).filter(
+                UserBlock.blocked_user_id == self.viewer_id
+            )
+            q = q.filter(
+                SocialPost.author_user_id.not_in(blocked_by_viewer),
+                SocialPost.author_user_id.not_in(viewers_blocking_me),
+            )
         if user_id:
             q = q.filter(SocialPost.author_user_id == user_id)
         if near:

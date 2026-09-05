@@ -17,7 +17,9 @@ class UploadService:
         self.repo = UploadRepository(db)
         self.settings = get_settings()
 
-    def upload_single(self, file: UploadFile, owner_id: uuid.UUID) -> UploadedAsset:
+    def upload_single(
+        self, file: UploadFile, owner_id: uuid.UUID, purpose: str = "general"
+    ) -> UploadedAsset:
         info = upload_image(file, str(owner_id))
         row = UploadedAsset(
             owner_user_id=owner_id,
@@ -30,7 +32,7 @@ class UploadService:
             sha256=str(info["sha256"]),
             width=int(info["width"]),
             height=int(info["height"]),
-            purpose="general",
+            purpose=purpose,
             status="available",
             expires_at=datetime.now(timezone.utc)
             + timedelta(hours=self.settings.abandoned_upload_ttl_hours),

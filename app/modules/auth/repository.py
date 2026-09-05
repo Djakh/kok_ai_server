@@ -27,3 +27,25 @@ class RefreshTokenRepository:
             {RefreshToken.revoked: True, RefreshToken.revoked_at: datetime.now(timezone.utc)},
             synchronize_session=False,
         )
+
+    def active_for_user(self, user_id) -> list[RefreshToken]:  # noqa: ANN001
+        now = datetime.now(timezone.utc)
+        return (
+            self.db.query(RefreshToken)
+            .filter(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked.is_(False),
+                RefreshToken.expires_at > now,
+            )
+            .order_by(RefreshToken.created_at.desc())
+            .all()
+        )
+
+    def revoke_for_user(self, user_id, session_id=None) -> bool:  # noqa: ANN001
+        query = self.db.query(RefreshToken).filter(RefreshToken.user_id == user_id)
+        if session_id is not None:
+            query = query.filter(RefreshToken.id == session_id)
+        rows = query.all()
+        for row in rows:
+            self.revoke(row)
+        return bool(rows)

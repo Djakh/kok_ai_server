@@ -32,7 +32,9 @@ class LocationEvidence(BaseModel):
     captured_at: datetime
     quality: Literal["excellent", "acceptable", "poor"]
 
-    @field_validator("latitude", "longitude", "horizontal_accuracy_meters", "best_sample_accuracy_meters")
+    @field_validator(
+        "latitude", "longitude", "horizontal_accuracy_meters", "best_sample_accuracy_meters"
+    )
     @classmethod
     def finite_numbers(cls, value: float) -> float:
         if not math.isfinite(value):
@@ -60,9 +62,9 @@ class CandidatePayload(BaseModel):
 
 
 class HealthPayload(BaseModel):
-    status: Literal["likely_healthy", "possible_issue"]
-    confidence: float = Field(ge=0, le=1)
-    summary: str | None
+    status: Literal["likely_healthy", "possible_issue", "not_available"]
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    summary: str | None = None
 
 
 class AnalysisPayload(BaseModel):
@@ -81,7 +83,11 @@ class AnalysisPayload(BaseModel):
     provider: Literal["kindwise_plant_id"]
     analyzed_at: datetime
     candidates: list[CandidatePayload]
-    health: HealthPayload | None
+    species_candidates: list[CandidatePayload]
+    health: HealthPayload
+    capabilities: dict[str, str]
+    attribution: dict[str, str]
+    uncertainty: dict[str, str | bool]
 
 
 class AnalysisEnvelope(BaseModel):
