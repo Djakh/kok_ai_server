@@ -1,4 +1,10 @@
-# Import all models so Alembic can discover metadata
+"""Canonical model registry, shared by runtime sessions and Alembic.
+
+Add every mapped model here. Model modules must import Base from db.base and
+must not import sessions or this registry (which would create import cycles).
+The registry completeness test discovers model files independently, so a new
+model omitted here fails CI even if no existing foreign key points to it yet.
+"""
 from app.common.db.outbox import OutboxEvent
 from app.modules.achievements.models import Achievement, UserAchievement
 from app.modules.auth.models import RefreshToken, VerificationChallenge

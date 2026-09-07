@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.common.config import get_settings
+from app.common.db import models  # noqa: F401 -- register every table before creating sessions
 
 settings = get_settings()
 
