@@ -16,6 +16,13 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Compose waits for PostgreSQL health, then `scripts/start-api.sh` runs migrations,
+seed, and FastAPI in order. A migration or seed failure logs the failed stage and
+exits nonzero; FastAPI starts only after both succeed. Uvicorn runs without reload
+and replaces the shell so it receives container shutdown signals directly.
+Use `docker compose up --build --wait` to wait for the API healthcheck and
+`docker compose logs api` to inspect startup failures.
+
 Then open:
 
 - API: `http://localhost:8000`
@@ -48,6 +55,13 @@ KOK_KINDWISE_HEALTH_MODE=off
 `off` avoids optional health-credit use. Allowed health modes are `off`, `auto`, and `all`. Automated tests use fixtures and never make live Kindwise calls.
 
 ## Quality checks
+
+`app/common/db/models.py` is the canonical ORM registry used by Alembic and runtime
+sessions (including seed and Celery). Add new mapped classes there and keep model
+definitions in `app/modules/<module>/models.py`, importing the shared Base from
+`app.common.db.base`. Model modules must not import the session module or registry.
+Fresh-process tests check registry completeness, shared metadata, and every foreign
+key target without relying on API router imports.
 
 ```bash
 .venv/bin/ruff check app tests
