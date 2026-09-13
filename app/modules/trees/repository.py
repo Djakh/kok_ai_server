@@ -1,7 +1,7 @@
 import uuid
 
-from geoalchemy2.functions import ST_DWithin, ST_MakePoint
-from sqlalchemy import and_, or_, text
+from geoalchemy2 import Geography, Geometry
+from sqlalchemy import and_, cast, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.common.pagination.cursor import decode_cursor
@@ -107,35 +107,18 @@ class TreeRepository:
         status: str | None,
         viewer_id: uuid.UUID,
     ):
-        sql = text(
-            """
-            SELECT t.id
-            FROM trees t
-            JOIN tree_locations tl ON tl.tree_id=t.id
-            WHERE t.deleted_at IS NULL
-            AND (t.is_public IS TRUE OR t.owner_user_id=:viewer_id)
-            AND (:status IS NULL OR t.status=:status)
-            AND ST_Intersects(
-              tl.location::geometry,
-              ST_MakeEnvelope(:min_lng,:min_lat,:max_lng,:max_lat,4326)
-            )
-            """
+        qry = self.db.query(Tree).join(TreeLocation, TreeLocation.tree_id == Tree.id)
+        qry = qry.filter(
+            Tree.deleted_at.is_(None),
+            or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
+            func.ST_Intersects(
+                cast(TreeLocation.location, Geometry(geometry_type="POINT", srid=4326)),
+                func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326),
+            ),
         )
-        rows = self.db.execute(
-            sql,
-            {
-                "min_lng": min_lng,
-                "min_lat": min_lat,
-                "max_lng": max_lng,
-                "max_lat": max_lat,
-                "status": status,
-                "viewer_id": viewer_id,
-            },
-        ).all()
-        ids = [x[0] for x in rows]
-        if not ids:
-            return []
-        return self.db.query(Tree).filter(Tree.id.in_(ids)).all()
+        if status:
+            qry = qry.filter(Tree.status == TreeStatus(status))
+        return qry.order_by(Tree.id.asc()).all()
 
     def map_center_radius(
         self,
@@ -145,12 +128,15 @@ class TreeRepository:
         status: str | None,
         viewer_id: uuid.UUID,
     ):
-        point = ST_MakePoint(lng, lat)
+        point = cast(
+            func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326),
+            Geography(geometry_type="POINT", srid=4326),
+        )
         qry = self.db.query(Tree).join(TreeLocation, TreeLocation.tree_id == Tree.id)
         qry = qry.filter(
             Tree.deleted_at.is_(None),
             or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
-            ST_DWithin(TreeLocation.location, point, radius),
+            func.ST_DWithin(TreeLocation.location, point, radius),
         )
         if status:
             qry = qry.filter(Tree.status == TreeStatus(status))

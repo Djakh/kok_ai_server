@@ -1,5 +1,7 @@
 import hashlib
+import hmac
 import io
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -14,6 +16,46 @@ from app.common.errors.exceptions import AppError
 
 settings = get_settings()
 
+
+def get_public_asset_url(asset_id: uuid.UUID | str) -> str:
+    """Return the HTTPS/API URL clients can use instead of the private S3 endpoint."""
+    return (
+        f"{settings.public_api_base_url.rstrip('/')}"
+        f"{settings.api_prefix}/media/{asset_id}"
+    )
+
+
+def get_tree_analysis_image_url(
+    image_id: uuid.UUID | str,
+    expires_seconds: int = 900,
+) -> str:
+    """Return a short-lived API URL for a private analysis-backed tree image."""
+    expires = int(time.time()) + expires_seconds
+    signature = _analysis_image_signature(image_id, expires)
+    return (
+        f"{settings.public_api_base_url.rstrip('/')}"
+        f"{settings.api_prefix}/media/tree-analysis/{image_id}"
+        f"?expires={expires}&signature={signature}"
+    )
+
+
+def verify_tree_analysis_image_signature(
+    image_id: uuid.UUID | str,
+    expires: int,
+    signature: str,
+) -> bool:
+    if expires < int(time.time()):
+        return False
+    return hmac.compare_digest(_analysis_image_signature(image_id, expires), signature)
+
+
+def _analysis_image_signature(image_id: uuid.UUID | str, expires: int) -> str:
+    message = f"tree-analysis-image:{image_id}:{expires}".encode()
+    return hmac.new(
+        settings.jwt_access_secret.encode(),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def get_s3_client() -> BaseClient:

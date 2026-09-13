@@ -2,7 +2,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+from app.common.storage.s3 import get_public_asset_url
 
 
 class UserPublic(BaseModel):
@@ -15,7 +17,14 @@ class UserPublic(BaseModel):
     role: str
     bio: str | None
     avatar_url: str | None
+    avatar_asset_id: UUID | None = Field(default=None, exclude=True)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def use_mobile_reachable_avatar_url(self) -> "UserPublic":
+        if self.avatar_asset_id:
+            self.avatar_url = get_public_asset_url(self.avatar_asset_id)
+        return self
 
 
 class UserMe(UserPublic):

@@ -16,6 +16,8 @@ responses never belong in the app.
 - Android Emulator: `http://10.0.2.2:8000/api/v1`.
 - Physical device: `http://<development-machine-LAN-IP>:8000/api/v1`.
 - Production API and media URLs must use HTTPS.
+- Public post, avatar, and tree images are served through `/api/v1/media/{asset_id}`;
+  clients must not receive or directly connect to the private S3/MinIO endpoint.
 - Coordinates are WGS84 decimal degrees and dates are timezone-aware ISO-8601 UTC.
 - Authenticated calls send `Authorization: Bearer <access_token>`.
 
@@ -282,6 +284,9 @@ refresh, or backgrounding because that would disable push delivery.
 
 ## Kindwise-backed tree registration
 
+For the exact capture, retry, provider-mapping, error, and media lifecycle contract, see
+[CREATE_TREE_KINDWISE_WORKFLOW.md](CREATE_TREE_KINDWISE_WORKFLOW.md).
+
 Canonical flow:
 
 ```text
@@ -468,11 +473,17 @@ authorization remains authoritative.
 
 ```text
 GET/POST    /social/posts
+GET         /social/feed?scope=all|following
+GET         /social/posts/me
+GET         /social/authors/{author_id}/posts
 GET/PATCH/DELETE /social/posts/{post_id}
 GET/POST/DELETE  /social/posts/{post_id}/likes
 GET/POST    /social/posts/{post_id}/comments
 DELETE      /social/posts/{post_id}/comments/{comment_id}
 ```
+
+See [SOCIAL_POSTS_API.md](SOCIAL_POSTS_API.md) for the complete timeline, media-layout, pagination,
+ownership, likes, and comments integration guide.
 
 Posts can associate an upload using `upload_id`; local device paths are rejected. Feeds exclude
 users blocked in either direction.
@@ -522,6 +533,11 @@ replacing a post image after creation is not supported. Comment creation is exac
   },
   "content": "My newly registered tree",
   "image_url": "https://cdn.example.com/post.jpg",
+  "image_width": 1080,
+  "image_height": 1350,
+  "image_aspect_ratio": 0.8,
+  "image": {"url":"https://cdn.example.com/post.jpg","width":1080,"height":1350,"aspect_ratio":0.8},
+  "images": [{"url":"https://cdn.example.com/post.jpg","width":1080,"height":1350,"aspect_ratio":0.8}],
   "location": {"latitude": 41.2995, "longitude": 69.2401},
   "created_at": "2026-08-21T10:00:00Z",
   "updated_at": "2026-08-21T10:00:00Z",

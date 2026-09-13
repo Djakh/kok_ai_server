@@ -41,6 +41,8 @@ uvicorn app.main:app --reload
 ```
 
 For a physical phone, use `http://<computer-LAN-IP>:8000`; Android Emulator uses `http://10.0.2.2:8000`.
+Set `KOK_PUBLIC_API_BASE_URL` to that same reachable origin. In production it must be the public
+HTTPS API origin (for example, `https://api.example.com`), because media URLs are built from it.
 
 ## Kindwise configuration
 
@@ -70,6 +72,7 @@ key target without relying on API router imports.
 alembic heads
 ```
 
-Mobile developers should use the authoritative [mobile integration guide](docs/KOKAI_MOBILE_BACKEND_CONTRACT.md).
+Mobile developers should use the authoritative [mobile integration guide](docs/KOKAI_MOBILE_BACKEND_CONTRACT.md)
+and the focused [create-tree and Kindwise workflow](docs/CREATE_TREE_KINDWISE_WORKFLOW.md).
 Backend implementation history remains in the [implementation report](docs/KOKAI_BACKEND_IMPLEMENTATION_REPORT.md)
 and [execution plan](docs/KOKAI_BACKEND_EXECUTION_PLAN.md).

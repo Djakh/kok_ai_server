@@ -126,7 +126,7 @@ def trees_map(
     east: float | None = None,
     center: str | None = None,
     radius: float | None = None,
-    status: str | None = None,
+    status: Literal["pending", "verified", "rejected"] | None = None,
     current: CurrentUser = Depends(get_current_user),
     service: TreeService = Depends(get_tree_service),
 ):

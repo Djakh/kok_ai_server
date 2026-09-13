@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from app.common.pagination.cursor import encode_cursor
 from app.common.rate_limit.dependencies import WriteRateLimit
 from app.common.responses.envelope import success_response
 from app.common.security.dependencies import CurrentUser, get_current_user
+from app.common.storage.s3 import get_public_asset_url
 from app.modules.social.constants import DEFAULT_POST_LIMIT, MAX_POST_LIMIT
 from app.modules.social.dependencies import get_social_service
 from app.modules.social.repository import SocialRepository
@@ -28,6 +29,7 @@ from app.modules.social.schemas import (
 )
 from app.modules.social.service import SocialService
 from app.modules.uploads.service import UploadService
+from app.modules.users.models import User
 
 router = APIRouter(prefix="/social", tags=["social"])
 
@@ -57,6 +59,89 @@ def _comment_payload(service: SocialService, row) -> dict:  # noqa: ANN001
         "liked_by_me": False,
         "is_mine": service.viewer_id == row.user_id,
     }
+
+
+def _parse_near(near: str | None) -> tuple[float, float, float] | None:
+    if not near:
+        return None
+    try:
+        lat, lng, radius = (float(value) for value in near.split(","))
+    except ValueError as exc:
+        raise AppError(
+            "invalid_near",
+            "near must be latitude,longitude,radius_meters",
+            422,
+        ) from exc
+    if not -90 <= lat <= 90 or not -180 <= lng <= 180 or not 1 <= radius <= 50_000:
+        raise AppError("invalid_near", "near coordinates or radius are outside limits", 422)
+    return lat, lng, radius
+
+
+def _post_page(
+    service: SocialService,
+    *,
+    cursor: str | None,
+    limit: int,
+    author_id: uuid.UUID | None = None,
+    near: str | None = None,
+    following_only: bool = False,
+) -> tuple[list[dict], str | None, int]:
+    lim = min(max(limit, 1), MAX_POST_LIMIT)
+    if following_only:
+        rows = service.repo.list_posts(
+            cursor,
+            lim + 1,
+            author_id,
+            _parse_near(near),
+            following_only=True,
+        )
+    else:
+        rows = service.repo.list_posts(cursor, lim + 1, author_id, _parse_near(near))
+    has_more = len(rows) > lim
+    page = rows[:lim]
+    next_cursor = None
+    if has_more and page:
+        last = page[-1]
+        next_cursor = encode_cursor(last.created_at, str(last.id))
+    return [service.post_payload(row) for row in page], next_cursor, lim
+
+
+def _timeline_response(
+    service: SocialService,
+    *,
+    cursor: str | None,
+    limit: int,
+    author_id: uuid.UUID | None = None,
+    near: str | None = None,
+    following_only: bool = False,
+    include_total: bool = False,
+    author: Any | None = None,
+):
+    items, next_cursor, lim = _post_page(
+        service,
+        cursor=cursor,
+        limit=limit,
+        author_id=author_id,
+        near=near,
+        following_only=following_only,
+    )
+    data: dict = {"items": items, "next_cursor": next_cursor}
+    if include_total and author_id:
+        data["total_count"] = service.repo.count_posts(author_id)
+    if author is not None:
+        avatar_asset_id = getattr(author, "avatar_asset_id", None)
+        data["author"] = {
+            "id": str(author.id),
+            "username": author.username,
+            "full_name": getattr(author, "full_name", None),
+            "avatar_url": (
+                get_public_asset_url(avatar_asset_id) if avatar_asset_id else None
+            ),
+        }
+    return success_response(
+        data,
+        meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim},
+    )
 
 
 @router.post("/posts", dependencies=[WriteRateLimit])
@@ -130,20 +215,72 @@ def list_posts(
     service: SocialService = Depends(get_social_service),
 ):
     _set_viewer(service, current.user.id)
-    near_parsed = None
-    if near:
-        lat, lng, radius = near.split(",")
-        near_parsed = (float(lat), float(lng), float(radius))
-    lim = min(max(limit, 1), MAX_POST_LIMIT)
-    rows = service.repo.list_posts(cursor, lim, user_id, near_parsed)
-    payload = [service.post_payload(x) for x in rows]
-    next_cursor = None
-    if rows:
-        last = rows[-1]
-        next_cursor = encode_cursor(last.created_at, str(last.id))
-    return success_response(
-        {"items": payload, "next_cursor": next_cursor},
-        meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim},
+    return _timeline_response(
+        service,
+        cursor=cursor,
+        limit=limit,
+        author_id=user_id,
+        near=near,
+    )
+
+
+@router.get("/feed")
+def get_feed(
+    scope: Literal["all", "following"] = "all",
+    cursor: str | None = None,
+    limit: int = DEFAULT_POST_LIMIT,
+    current: CurrentUser = Depends(get_current_user),
+    service: SocialService = Depends(get_social_service),
+):
+    """Return the discovery feed or posts from followed authors plus the viewer."""
+    _set_viewer(service, current.user.id)
+    return _timeline_response(
+        service,
+        cursor=cursor,
+        limit=limit,
+        following_only=scope == "following",
+    )
+
+
+@router.get("/posts/me")
+@router.get("/my-posts", include_in_schema=False)
+def my_posts(
+    cursor: str | None = None,
+    limit: int = DEFAULT_POST_LIMIT,
+    current: CurrentUser = Depends(get_current_user),
+    service: SocialService = Depends(get_social_service),
+):
+    _set_viewer(service, current.user.id)
+    return _timeline_response(
+        service,
+        cursor=cursor,
+        limit=limit,
+        author_id=current.user.id,
+        include_total=True,
+        author=current.user,
+    )
+
+
+@router.get("/authors/{author_id}/posts")
+@router.get("/author-posts/{author_id}", include_in_schema=False)
+def author_posts(
+    author_id: uuid.UUID,
+    cursor: str | None = None,
+    limit: int = DEFAULT_POST_LIMIT,
+    current: CurrentUser = Depends(get_current_user),
+    service: SocialService = Depends(get_social_service),
+):
+    _set_viewer(service, current.user.id)
+    author = service.db.query(User).filter(User.id == author_id, User.is_active.is_(True)).first()
+    if not author:
+        raise AppError("not_found", "Author not found", 404)
+    return _timeline_response(
+        service,
+        cursor=cursor,
+        limit=limit,
+        author_id=author_id,
+        include_total=True,
+        author=author,
     )
 
 
@@ -212,14 +349,45 @@ def unlike_post(
 @router.get("/posts/{post_id}/likes")
 def list_likes(
     post_id: uuid.UUID,
+    cursor: str | None = None,
+    limit: int = 50,
     current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    del current
     repo = SocialRepository(db)
-    rows = repo.likes(post_id)
-    items = [{"id": str(x.id), "user_id": str(x.user_id), "created_at": x.created_at} for x in rows]
-    return success_response({"items": items, "next_cursor": None})
+    repo.viewer_id = current.user.id
+    if not repo.get_post(post_id):
+        raise AppError("not_found", "Post not found", 404)
+    lim = min(max(limit, 1), 100)
+    rows = repo.likes(post_id, cursor, lim + 1)
+    has_more = len(rows) > lim
+    page = rows[:lim]
+    items = []
+    for like in page:
+        user = db.query(User).filter(User.id == like.user_id).first()
+        avatar_asset_id = user.avatar_asset_id if user else None
+        items.append(
+            {
+                "id": str(like.id),
+                "user_id": str(like.user_id),
+                "user": {
+                    "id": str(like.user_id),
+                    "username": user.username if user else "unknown",
+                    "full_name": user.full_name if user else None,
+                    "avatar_url": (
+                        get_public_asset_url(avatar_asset_id) if avatar_asset_id else None
+                    ),
+                },
+                "created_at": like.created_at,
+            }
+        )
+    next_cursor = None
+    if has_more and page:
+        next_cursor = encode_cursor(page[-1].created_at, str(page[-1].id))
+    return success_response(
+        {"items": items, "next_cursor": next_cursor},
+        meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim},
+    )
 
 
 @router.post("/posts/{post_id}/comments", dependencies=[WriteRateLimit])
@@ -237,13 +405,27 @@ def create_comment(
 @router.get("/posts/{post_id}/comments")
 def list_comments(
     post_id: uuid.UUID,
+    cursor: str | None = None,
+    limit: int = 50,
     current: CurrentUser = Depends(get_current_user),
     service: SocialService = Depends(get_social_service),
 ):
     _set_viewer(service, current.user.id)
-    rows = service.repo.list_comments(post_id)
+    if not service.repo.get_post(post_id):
+        raise AppError("not_found", "Post not found", 404)
+    lim = min(max(limit, 1), 100)
+    rows = service.repo.list_comments(post_id, cursor, lim + 1)
+    has_more = len(rows) > lim
+    page = rows[:lim]
+    next_cursor = None
+    if has_more and page:
+        next_cursor = encode_cursor(page[-1].created_at, str(page[-1].id))
     return success_response(
-        {"items": [_comment_payload(service, row) for row in rows], "next_cursor": None}
+        {
+            "items": [_comment_payload(service, row) for row in page],
+            "next_cursor": next_cursor,
+        },
+        meta={"cursor": cursor, "next_cursor": next_cursor, "limit": lim},
     )
 
 

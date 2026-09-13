@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.common.enums.constants import SUPPORTED_LANGUAGES
 from app.common.errors.exceptions import AppError
 from app.common.security.password import verify_password
+from app.common.storage.s3 import get_public_asset_url
 from app.modules.auth.repository import RefreshTokenRepository
 from app.modules.notifications.models import Notification
 from app.modules.social.models import SocialPost, SocialPostComment
@@ -92,7 +93,7 @@ class UserService:
         if not user or not asset:
             raise AppError("invalid_upload", "Avatar upload is missing or not owned.", 422)
         user.avatar_asset_id = asset.id
-        user.avatar_url = asset.url
+        user.avatar_url = get_public_asset_url(asset.id)
         asset.status = "attached"
         asset.attached_at = datetime.now(timezone.utc)
         asset.expires_at = None

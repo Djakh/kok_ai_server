@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.common.db.outbox import OutboxEvent
 from app.common.errors.exceptions import AppError
+from app.common.storage.s3 import get_public_asset_url, get_tree_analysis_image_url
 from app.modules.tree_analyses.models import IdempotencyRecord, TreeAnalysis, TreeScan
 from app.modules.trees.models import (
     Tree,
@@ -314,10 +315,13 @@ class TreeService:
         )
         health = (analysis.normalized_result or {}).get("health") or {}
         display_name = nickname or confirmed_species or "Unnamed tree"
+        captured_at = datetime.fromisoformat(
+            str(location_evidence["captured_at"]).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
         tree = Tree(
             owner_user_id=owner_id,
             name=display_name,
-            captured_at=analysis.analyzed_at or datetime.now(timezone.utc),
+            captured_at=captured_at,
             status=TreeStatus.PENDING,
             ai_status="completed",
             ai_model_version=(analysis.provider_metadata or {}).get("model_version"),
@@ -352,7 +356,9 @@ class TreeService:
                 quality=location_evidence["quality"],
             )
         )
-        self.repo.create_scan(self._scan_from_analysis(tree.id, analysis, lat, lng))
+        self.repo.create_scan(
+            self._scan_from_analysis(tree.id, analysis, lat, lng, captured_at=captured_at)
+        )
         self.repo.create_event(
             TreeEvent(
                 tree_id=tree.id,
@@ -487,7 +493,7 @@ class TreeService:
                 .first()
             )
             if asset:
-                image_map[img.kind.value] = asset.url
+                image_map[img.kind.value] = get_public_asset_url(asset.id)
 
         lat, lng = self._read_lat_lng(tree.id)
         if location_row is None:
@@ -505,11 +511,9 @@ class TreeService:
         primary_image_url = next(iter(image_map.values()), None)
         photos = [{"type": key, "url": value} for key, value in image_map.items()]
         if tree.analysis_id:
-            from app.common.storage.s3 import get_private_image_url
-
             analysis_images = self.repo.get_analysis_images(tree.analysis_id)
             photos = [
-                {"type": image.organ, "url": get_private_image_url(image.object_key)}
+                {"type": image.organ, "url": get_tree_analysis_image_url(image.id)}
                 for image in analysis_images
             ]
             primary_image_url = photos[0]["url"] if photos else None

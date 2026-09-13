@@ -18,6 +18,25 @@ from app.modules.tree_analyses.provider import (
 )
 
 DETAILS = "common_names,description,taxonomy,rank,gbif_id,inaturalist_id,image"
+KINDWISE_DETAIL_LANGUAGES = {
+    "ar",
+    "cs",
+    "da",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "it",
+    "ko",
+    "nl",
+    "pl",
+    "pt-BR",
+    "sv",
+    "tr",
+    "zh",
+    "zh-hant",
+}
 
 
 class KindwisePlantIdClient(PlantAnalysisProvider):
@@ -42,21 +61,25 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
             )
         context = context or {}
         location = context.get("location_evidence") or {}
-        language = str(context.get("language") or self.settings.kindwise_language)
-        languages = language if language == "en" else f"{language},{self.settings.kindwise_fallback_language}"
+        language = self._provider_language(
+            str(context.get("language") or self.settings.kindwise_language)
+        )
         data = {
             "latitude": str(location.get("latitude", "")),
             "longitude": str(location.get("longitude", "")),
             "datetime": str(location.get("captured_at", "")),
             "similar_images": "false",
             "custom_id": str(context["custom_id"]),
-            "health": self.settings.kindwise_health_mode,
             "suggestion_filter": json.dumps(
                 {"classification": self.settings.kindwise_suggestion_filter}, separators=(",", ":")
             ),
             "classification_level": self.settings.kindwise_classification_level,
             "classification_raw": "false",
         }
+        # Kindwise uses omission—not the string "off"—to disable its optional
+        # health assessment. Sending "off" causes a 400 response.
+        if self.settings.kindwise_health_mode != "off":
+            data["health"] = self.settings.kindwise_health_mode
         files = [
             (f"image{index}", (image.filename, image.content, image.content_type))
             for index, image in enumerate(images, 1)
@@ -66,7 +89,7 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
             "/identification",
             params={
                 "details": DETAILS,
-                "language": languages,
+                "language": language,
             },
             data=data,
             files=files,
@@ -76,17 +99,25 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
     async def retrieve(self, custom_id: int) -> ProviderResult | None:
         if not self.settings.kindwise_api_key:
             return None
+        language = self._provider_language(self.settings.kindwise_language)
         try:
             payload = await self._request(
                 "GET",
                 f"/identification/{custom_id}",
-                params={"details": DETAILS, "language": self.settings.kindwise_language},
+                params={"details": DETAILS, "language": language},
             )
         except ProviderError as exc:
             if exc.status_code == 404:
                 return None
             raise
-        return self.normalize(payload, self.settings.kindwise_language)
+        return self.normalize(payload, language)
+
+    def _provider_language(self, requested: str) -> str:
+        """Map app locales to a language currently supported by Kindwise details."""
+        if requested in KINDWISE_DETAIL_LANGUAGES:
+            return requested
+        fallback = self.settings.kindwise_fallback_language
+        return fallback if fallback in KINDWISE_DETAIL_LANGUAGES else "en"
 
     async def usage_info(self) -> dict[str, Any]:
         if not self.settings.kindwise_api_key:

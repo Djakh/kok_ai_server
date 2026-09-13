@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.common.config import get_settings
 from app.common.errors.exceptions import AppError
+from app.common.storage.s3 import get_public_asset_url
 from app.modules.social.models import SocialPost, SocialPostComment, SocialPostImage, SocialPostLike
 from app.modules.social.repository import SocialRepository
 from app.modules.uploads.models import UploadedAsset
@@ -127,12 +128,14 @@ class SocialService:
         loc: dict[str, float | None] = {"latitude": None, "longitude": None}
         if row and row.lat is not None:
             loc = {"latitude": float(row.lat), "longitude": float(row.lng)}
-        image = (
+        images = (
             self.db.query(UploadedAsset)
             .join(SocialPostImage, SocialPostImage.uploaded_asset_id == UploadedAsset.id)
             .filter(SocialPostImage.post_id == post.id)
-            .first()
+            .order_by(SocialPostImage.created_at.asc(), SocialPostImage.id.asc())
+            .all()
         )
+        image = images[0] if images else None
         author = self.db.query(User).filter(User.id == post.author_user_id).first()
         like_count = self.db.query(SocialPostLike).filter(SocialPostLike.post_id == post.id).count()
         comment_count = (
@@ -149,11 +152,37 @@ class SocialService:
                 .first()
                 is not None
             )
+        media = [
+            {
+                "id": str(item.id),
+                "url": get_public_asset_url(item.id),
+                "width": item.width,
+                "height": item.height,
+                "aspect_ratio": (
+                    item.width / item.height
+                    if item.width and item.height
+                    else None
+                ),
+                "content_type": item.content_type,
+            }
+            for item in images
+        ]
         return {
             "id": str(post.id),
             "author_id": str(post.author_user_id),
             "content": post.content,
-            "image_url": image.url if image else None,
+            # Do not return the denormalized S3 URL. Old rows can contain an
+            # internal/localhost endpoint, which is unreachable from a phone.
+            "image_url": get_public_asset_url(image.id) if image else None,
+            "image_width": image.width if image else None,
+            "image_height": image.height if image else None,
+            "image_aspect_ratio": (
+                image.width / image.height
+                if image and image.width and image.height
+                else None
+            ),
+            "image": media[0] if media else None,
+            "images": media,
             "location": loc,
             "created_at": post.created_at,
             "updated_at": post.updated_at,
@@ -161,7 +190,11 @@ class SocialService:
                 "id": str(author.id) if author else str(post.author_user_id),
                 "username": author.username if author else "unknown",
                 "full_name": author.full_name if author else None,
-                "avatar_url": author.avatar_url if author else None,
+                "avatar_url": (
+                    get_public_asset_url(author.avatar_asset_id)
+                    if author and author.avatar_asset_id
+                    else None
+                ),
             },
             "like_count": like_count,
             "comment_count": comment_count,
@@ -178,7 +211,11 @@ class SocialService:
                 "id": str(author.id) if author else str(comment.user_id),
                 "username": author.username if author else "unknown",
                 "full_name": author.full_name if author else None,
-                "avatar_url": author.avatar_url if author else None,
+                "avatar_url": (
+                    get_public_asset_url(author.avatar_asset_id)
+                    if author and author.avatar_asset_id
+                    else None
+                ),
             },
             "post_id": str(comment.post_id),
             "content": comment.content,
@@ -190,20 +227,31 @@ class SocialService:
         }
 
     def add_like(self, post_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        if not self.repo.get_post(post_id):
+            raise AppError("not_found", "Post not found", 404)
+        if self.repo.get_like(user_id, post_id):
+            return
         try:
             self.repo.create_like(user_id, post_id)
             self.db.commit()
         except Exception as exc:
             self.db.rollback()
-            raise AppError("already_liked", "Like already exists", 409) from exc
+            # A concurrent duplicate like has the same final state.
+            if self.repo.get_like(user_id, post_id):
+                return
+            raise AppError("like_failed", "Could not like post", 409) from exc
 
     def remove_like(self, post_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        if not self.repo.get_post(post_id):
+            raise AppError("not_found", "Post not found", 404)
         self.repo.delete_like(user_id, post_id)
         self.db.commit()
 
     def add_comment(
         self, post_id: uuid.UUID, user_id: uuid.UUID, content: str
     ) -> SocialPostComment:
+        if not self.repo.get_post(post_id):
+            raise AppError("not_found", "Post not found", 404)
         row = SocialPostComment(post_id=post_id, user_id=user_id, content=content)
         self.repo.create_comment(row)
         self.db.commit()
@@ -214,7 +262,8 @@ class SocialService:
         row = self.repo.get_comment(comment_id)
         if not row:
             raise AppError("not_found", "Comment not found", 404)
-        if row.user_id != user_id:
+        post = self.repo.get_post(row.post_id)
+        if row.user_id != user_id and (not post or post.author_user_id != user_id):
             raise AppError("forbidden", "Not comment owner", 403)
         self.repo.delete_comment(comment_id)
         self.db.commit()

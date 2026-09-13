@@ -15,17 +15,40 @@ class FakePost:
 class FakeRepo:
     def __init__(self):
         self.comments_store: dict[str, list[SimpleNamespace]] = {}
+        self.last_list_args = None
 
-    def list_posts(self, cursor, limit, user_id, near):  # noqa: ANN001
+    def list_posts(  # noqa: ANN001
+        self, cursor, limit, user_id, near, following_only=False
+    ):
+        self.last_list_args = (cursor, limit, user_id, near, following_only)
         return [FakePost()]
 
-    def list_comments(self, post_id):  # noqa: ANN001
-        return self.comments_store.get(str(post_id), [])
+    def count_posts(self, user_id):  # noqa: ANN001
+        return 1
+
+    def list_comments(self, post_id, cursor=None, limit=51):  # noqa: ANN001
+        del cursor
+        return self.comments_store.get(str(post_id), [])[:limit]
+
+    def get_post(self, post_id):  # noqa: ANN001
+        return FakePost()
 
 
 class FakeSocialService:
     def __init__(self):
         self.repo = FakeRepo()
+        self.db = SimpleNamespace(
+            query=lambda model: SimpleNamespace(
+                filter=lambda *args: SimpleNamespace(
+                    first=lambda: SimpleNamespace(
+                        id=uuid.uuid4(),
+                        username="author",
+                        full_name="Author",
+                        avatar_asset_id=None,
+                    )
+                )
+            )
+        )
 
     def post_payload(self, post):  # noqa: ANN001
         return {
@@ -33,6 +56,11 @@ class FakeSocialService:
             "author_id": str(uuid.uuid4()),
             "content": "hello",
             "image_url": None,
+            "image": None,
+            "images": [],
+            "image_width": None,
+            "image_height": None,
+            "image_aspect_ratio": None,
             "location": {"latitude": None, "longitude": None},
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -57,6 +85,35 @@ def test_social_posts_list(client):
     resp = client.get("/api/v1/social/posts?limit=1")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+def test_social_feed_scopes_and_author_timelines(client):
+    fake_service = FakeSocialService()
+    client.app.dependency_overrides[get_social_service] = lambda: fake_service
+
+    following = client.get("/api/v1/social/feed?scope=following&limit=10")
+    assert following.status_code == 200
+    assert fake_service.repo.last_list_args[-1] is True
+
+    mine = client.get("/api/v1/social/posts/me")
+    assert mine.status_code == 200
+    assert mine.json()["data"]["total_count"] == 1
+    assert mine.json()["data"]["author"]["username"] == "tester"
+
+    author_id = uuid.uuid4()
+    authored = client.get(f"/api/v1/social/authors/{author_id}/posts")
+    assert authored.status_code == 200
+    assert fake_service.repo.last_list_args[2] == author_id
+    assert authored.json()["data"]["author"]["username"] == "author"
+
+
+def test_social_near_filter_validation(client):
+    client.app.dependency_overrides[get_social_service] = lambda: FakeSocialService()
+
+    response = client.get("/api/v1/social/posts?near=91,69,100")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_near"
 
 
 def test_social_multipart_create(client, monkeypatch):

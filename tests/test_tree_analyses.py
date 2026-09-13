@@ -2,7 +2,7 @@ import asyncio
 import io
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -119,10 +119,12 @@ async def test_kindwise_exact_server_request_and_empty_candidates() -> None:
         assert request.url.path == "/api/v3/identification"
         assert request.headers["Api-Key"] == "server-secret"
         assert request.url.params["details"].startswith("common_names,description,taxonomy")
+        assert request.url.params["language"] == "en"
         body = await request.aread()
         assert b"custom_id" in body and b"12345" in body
         assert b"suggestion_filter" in body and b"tree" in body
         assert b"classification_level" in body and b"species" in body
+        assert b'name="health"' not in body
         assert body.count(b'filename="') == 2
         return httpx.Response(
             201,
@@ -150,6 +152,7 @@ async def test_kindwise_exact_server_request_and_empty_candidates() -> None:
         ["whole_tree", "leaf"],
         {
             "custom_id": 12345,
+            "language": "uz",
             "location_evidence": {
                 "latitude": 41.3,
                 "longitude": 69.2,
@@ -161,6 +164,41 @@ async def test_kindwise_exact_server_request_and_empty_candidates() -> None:
     assert result.species_candidates == []
     assert result.is_plant is True
     assert "provider-private" not in repr(result.species_candidates)
+
+
+@pytest.mark.asyncio
+async def test_kindwise_health_mode_is_sent_only_when_enabled() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = await request.aread()
+        assert b'name="health"' in body
+        assert b"auto" in body
+        return httpx.Response(
+            201,
+            json={
+                "result": {
+                    "is_plant": {"binary": True, "probability": 0.9},
+                    "classification": {"suggestions": []},
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://plant.id/api/v3"
+    )
+    provider = KindwisePlantIdClient(
+        Settings(
+            _env_file=None,
+            kindwise_api_key="server-secret",
+            kindwise_health_mode="auto",
+        ),
+        client,
+    )
+    await provider.analyze(
+        [ProviderImage(jpeg_bytes(), "image/jpeg", "tree.jpg")],
+        ["whole_tree"],
+        {"custom_id": 1, "location_evidence": location_evidence()},
+    )
+    await client.aclose()
 
 
 def test_kindwise_no_plant_and_health_mapping() -> None:
@@ -477,6 +515,84 @@ def test_completed_analysis_cannot_be_attached_twice() -> None:
         )
     assert exc_info.value.code == "INVALID_STATE"
     assert exc_info.value.status_code == 409
+
+
+def test_tree_creation_preserves_photo_capture_time() -> None:
+    owner_id = uuid.uuid4()
+    analysis_id = uuid.uuid4()
+    analyzed_at = datetime.now(timezone.utc)
+    captured_at = analyzed_at.replace(microsecond=0) - timedelta(seconds=48)
+    analysis = SimpleNamespace(
+        id=analysis_id,
+        status="completed",
+        normalized_result={
+            "provider": "kindwise_plant_id",
+            "health": {"status": "not_available"},
+        },
+        provider_metadata={"model_version": "test"},
+        location_evidence=location_evidence(),
+        analyzed_at=analyzed_at,
+        created_at=analyzed_at,
+    )
+
+    class FakeRepo:
+        created_tree = None
+        created_scan = None
+
+        @staticmethod
+        def get_analysis(requested_analysis_id, requested_owner_id):  # noqa: ANN001
+            assert requested_analysis_id == analysis_id
+            assert requested_owner_id == owner_id
+            return analysis
+
+        @staticmethod
+        def get_scan_by_analysis(requested_analysis_id):  # noqa: ANN001
+            assert requested_analysis_id == analysis_id
+            return None
+
+        @staticmethod
+        def get_candidate(candidate_id, requested_analysis_id):  # noqa: ANN001
+            return None
+
+        @classmethod
+        def create_tree(cls, tree):  # noqa: ANN001
+            cls.created_tree = tree
+
+        @staticmethod
+        def create_location(location):  # noqa: ANN001
+            return location
+
+        @classmethod
+        def create_scan(cls, scan):  # noqa: ANN001
+            cls.created_scan = scan
+
+        @staticmethod
+        def create_event(event):  # noqa: ANN001
+            return event
+
+    service = TreeService.__new__(TreeService)
+    service.repo = FakeRepo()
+    service.db = SimpleNamespace(
+        add=lambda row: None,
+        flush=lambda: None,
+        refresh=lambda row: None,
+    )
+
+    tree = service.create_from_analysis(
+        owner_id,
+        analysis_id,
+        None,
+        "Platanus orientalis",
+        {**location_evidence(), "captured_at": captured_at.isoformat()},
+        "noNearbyTrees",
+        "School plane",
+        None,
+        "private",
+    )
+
+    assert tree.captured_at == captured_at
+    assert FakeRepo.created_scan.captured_at == captured_at
+    assert FakeRepo.created_scan.analyzed_at == analyzed_at
 
 
 def test_analysis_api_valid_multipart_and_provider_failure(client) -> None:

@@ -183,6 +183,10 @@ def ensure_post_bundle(
 ) -> SocialPost:
     post = db.query(SocialPost).filter(SocialPost.content == content).first()
     if post:
+        if image_asset is None:
+            # Historical demo rows referenced object keys that were never
+            # uploaded. Do not keep advertising those broken images.
+            db.query(SocialPostImage).filter(SocialPostImage.post_id == post.id).delete()
         return post
     post = SocialPost(
         author_user_id=author.id,
@@ -280,12 +284,9 @@ def run() -> None:
         alice_front = ensure_asset(db, owner_user_id=alice.id, storage_key="seed/alice-front.jpg", file_name="alice-front.jpg")
         alice_trunk = ensure_asset(db, owner_user_id=alice.id, storage_key="seed/alice-trunk.jpg", file_name="alice-trunk.jpg")
         alice_leaves = ensure_asset(db, owner_user_id=alice.id, storage_key="seed/alice-leaves.jpg", file_name="alice-leaves.jpg")
-        alice_post = ensure_asset(db, owner_user_id=alice.id, storage_key="seed/alice-post.jpg", file_name="alice-post.jpg")
-
         clara_front = ensure_asset(db, owner_user_id=clara.id, storage_key="seed/clara-front.jpg", file_name="clara-front.jpg")
         clara_trunk = ensure_asset(db, owner_user_id=clara.id, storage_key="seed/clara-trunk.jpg", file_name="clara-trunk.jpg")
         clara_leaves = ensure_asset(db, owner_user_id=clara.id, storage_key="seed/clara-leaves.jpg", file_name="clara-leaves.jpg")
-        clara_post = ensure_asset(db, owner_user_id=clara.id, storage_key="seed/clara-post.jpg", file_name="clara-post.jpg")
 
         sample_detection = (
             '{"tree_detected": true, "images_with_detections": 3, "max_confidence": 0.9821, '
@@ -625,7 +626,7 @@ def run() -> None:
             longitude=69.2401,
             latitude=41.2995,
             now=now,
-            image_asset=alice_post,
+            image_asset=None,
         )
         post_two = ensure_post_bundle(
             db,
@@ -635,7 +636,7 @@ def run() -> None:
             longitude=69.2551,
             latitude=41.3111,
             now=now,
-            image_asset=clara_post,
+            image_asset=None,
         )
 
         ensure_like(db, user_id=bob.id, post_id=post_one.id)
