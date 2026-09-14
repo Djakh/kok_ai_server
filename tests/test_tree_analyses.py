@@ -11,6 +11,7 @@ from fastapi import UploadFile
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
 
+import app.modules.tree_analyses.service as tree_analysis_service_module
 from app.common.config import Settings
 from app.common.errors.exceptions import AppError
 from app.common.observability import analysis_concurrency_slot
@@ -124,6 +125,8 @@ async def test_kindwise_exact_server_request_and_empty_candidates() -> None:
         assert b"custom_id" in body and b"12345" in body
         assert b"suggestion_filter" in body and b"tree" in body
         assert b"classification_level" in body and b"species" in body
+        assert b"similar_images" not in body
+        assert b"classification_raw" not in body
         assert b'name="health"' not in body
         assert body.count(b'filename="') == 2
         return httpx.Response(
@@ -302,6 +305,36 @@ async def test_kindwise_safe_error_mapping(status, headers, code, http_status) -
     await client.aclose()
     assert exc_info.value.code == code
     assert exc_info.value.status_code == http_status
+    assert exc_info.value.details["provider_status_code"] == status
+
+
+def test_kindwise_exposes_safe_validation_reason() -> None:
+    response = httpx.Response(
+        400,
+        headers={"Content-Type": "application/json"},
+        json={"detail": "datetime has an invalid format"},
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        KindwisePlantIdClient._raise_for_status(response)
+
+    assert exc_info.value.details == {
+        "provider_status_code": 400,
+        "provider_reason": "datetime has an invalid format",
+    }
+
+
+def test_provider_custom_ids_are_positive_and_json_safe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tree_analysis_service_module.secrets,
+        "randbelow",
+        lambda upper_bound: upper_bound - 1,
+    )
+
+    assert (
+        tree_analysis_service_module.new_provider_custom_id()
+        == tree_analysis_service_module.MAX_PROVIDER_CUSTOM_ID
+    )
 
 
 def test_confidence_is_clamped() -> None:

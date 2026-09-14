@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,12 @@ from app.modules.users.models import UserSettings
 StorageWriter = Callable[[bytes, str, str, str], str]
 IDEMPOTENCY_CONSTRAINT = "uq_tree_analyses_owner_idempotency"
 logger = logging.getLogger(__name__)
+MAX_PROVIDER_CUSTOM_ID = (1 << 53) - 1
+
+
+def new_provider_custom_id() -> int:
+    """Return a positive numeric ID safe across environments and JSON implementations."""
+    return secrets.randbelow(MAX_PROVIDER_CUSTOM_ID) + 1
 
 
 def integrity_constraint_name(exc: IntegrityError) -> str | None:
@@ -167,6 +174,7 @@ class TreeAnalysisService:
                     location_evidence=location_evidence,
                     provider_name="kindwise_plant_id",
                     health_mode=self.settings.kindwise_health_mode,
+                    numeric_provider_custom_id=new_provider_custom_id(),
                 )
             )
         except IntegrityError as exc:

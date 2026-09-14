@@ -425,7 +425,7 @@ Always branch on `error.code`, not on the English message.
 | 415/422 | `invalid_image`, `image_decode_failed`, `invalid_image_dimensions`, `invalid_image_count` | Correct capture/input and begin a new analysis. |
 | 422 | `no_plant_detected` | Ask the user to retake clear tree/leaf photos. The error details include `analysis_id`. |
 | 422 | `invalid_location_evidence` | Recapture GPS or return to the original location. |
-| 422 | `ai_provider_rejected_input` | Correct the request/images before retrying. |
+| 422 | `ai_provider_rejected_input` | Inspect `details.provider_status_code` and optional safe `details.provider_reason`; correct the indicated input and start a new analysis with a new key. |
 | 429 | `ai_rate_limited` | Respect `Retry-After`; retry the exact request with the same key. |
 | 429 | `ai_quota_exceeded` | Show temporary unavailability; do not loop retries. |
 | 502/503/504 | `ai_provider_unavailable`, `ai_provider_misconfigured`, `backend_unavailable`, `request_timeout` | Show retry UI. Reuse the same key for the unchanged request. |

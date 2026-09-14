@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
@@ -18,6 +19,7 @@ from app.modules.tree_analyses.provider import (
 )
 
 DETAILS = "common_names,description,taxonomy,rank,gbif_id,inaturalist_id,image"
+logger = logging.getLogger(__name__)
 KINDWISE_DETAIL_LANGUAGES = {
     "ar",
     "cs",
@@ -68,13 +70,11 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
             "latitude": str(location.get("latitude", "")),
             "longitude": str(location.get("longitude", "")),
             "datetime": str(location.get("captured_at", "")),
-            "similar_images": "false",
             "custom_id": str(context["custom_id"]),
             "suggestion_filter": json.dumps(
                 {"classification": self.settings.kindwise_suggestion_filter}, separators=(",", ":")
             ),
             "classification_level": self.settings.kindwise_classification_level,
-            "classification_raw": "false",
         }
         # Kindwise uses omission—not the string "off"—to disable its optional
         # health assessment. Sending "off" causes a 400 response.
@@ -172,10 +172,25 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
     def _raise_for_status(response: httpx.Response) -> None:
         if response.status_code < 400:
             return
+        details = KindwisePlantIdClient._safe_error_details(response)
+        logger.warning(
+            "kindwise_request_rejected",
+            extra={
+                "provider_status_code": response.status_code,
+                "provider_reason": details.get("provider_reason"),
+            },
+        )
         if response.status_code in {401, 403}:
-            raise ProviderError("ai_provider_misconfigured", "Plant identification is unavailable.", 503)
+            raise ProviderError(
+                "ai_provider_misconfigured",
+                "Plant identification is unavailable.",
+                503,
+                details,
+            )
         if response.status_code == 404:
-            raise ProviderError("analysis_not_found", "Provider result was not found.", 404)
+            raise ProviderError(
+                "analysis_not_found", "Provider result was not found.", 404, details
+            )
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
             if retry_after:
@@ -187,14 +202,57 @@ class KindwisePlantIdClient(PlantAnalysisProvider):
                     "ai_rate_limited",
                     "Plant identification is temporarily limited.",
                     429,
-                    {"retry_after_seconds": retry_seconds},
+                    {**details, "retry_after_seconds": retry_seconds},
                 )
-            raise ProviderError("ai_quota_exceeded", "Plant identification quota is unavailable.", 429)
+            raise ProviderError(
+                "ai_quota_exceeded",
+                "Plant identification quota is unavailable.",
+                429,
+                details,
+            )
         if response.status_code in {408, 504}:
-            raise ProviderError("request_timeout", "Plant identification timed out.", 504)
+            raise ProviderError(
+                "request_timeout", "Plant identification timed out.", 504, details
+            )
         if response.status_code >= 500:
-            raise ProviderError("ai_provider_unavailable", "Plant identification is unavailable.", 502)
-        raise ProviderError("ai_provider_rejected_input", "Plant identification rejected the input.", 422)
+            raise ProviderError(
+                "ai_provider_unavailable",
+                "Plant identification is unavailable.",
+                502,
+                details,
+            )
+        raise ProviderError(
+            "ai_provider_rejected_input",
+            "Plant identification rejected the input.",
+            422,
+            details,
+        )
+
+    @staticmethod
+    def _safe_error_details(response: httpx.Response) -> dict[str, Any]:
+        details: dict[str, Any] = {"provider_status_code": response.status_code}
+        content_type = response.headers.get("content-type", "").casefold()
+        reason: str | None = None
+        if "json" in content_type:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                candidate = payload.get("detail") or payload.get("message") or payload.get("error")
+                if isinstance(candidate, str):
+                    reason = candidate
+                elif candidate is not None:
+                    reason = json.dumps(candidate, separators=(",", ":"), default=str)
+            elif isinstance(payload, list):
+                reason = json.dumps(payload, separators=(",", ":"), default=str)
+        else:
+            reason = response.text
+        if reason:
+            normalized = " ".join(reason.split())
+            if normalized and "<html" not in normalized.casefold():
+                details["provider_reason"] = normalized[:300]
+        return details
 
     @classmethod
     def normalize(cls, payload: dict[str, Any], preferred_language: str = "en") -> ProviderResult:
