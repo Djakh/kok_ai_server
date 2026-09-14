@@ -159,7 +159,9 @@ file=<jpeg-or-png>
 purpose=social_post
 ```
 
-JPEG and PNG are supported, up to 10 MB before processing. Save `data.id` from the response.
+JPEG and PNG are supported, up to 15 MiB before processing. Save `data.id` from the response.
+Mobile should resize and compress ordinary photos before upload; the recommended implementation
+is specified in [MOBILE_IMAGE_OPTIMIZATION_PROMPT.md](MOBILE_IMAGE_OPTIMIZATION_PROMPT.md).
 
 ### 2. Create
 

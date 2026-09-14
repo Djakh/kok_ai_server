@@ -650,7 +650,9 @@ response has the same three-field settings shape. `GET /languages` returns those
 avatar, post, or issue API remains authoritative.
 
 Only JPEG (`image/jpeg`) and PNG (`image/png`) images are accepted. Each source file is limited to
-10 MiB and 40 million decoded pixels. Unsupported content returns `415`; excess size returns `413`.
+15 MiB and 40 million decoded pixels. Tree-analysis requests have a 40 MB combined image-byte
+limit. Unsupported content returns `415`; excess size returns `413`. Mobile should optimize well
+below these safety ceilings using [MOBILE_IMAGE_OPTIMIZATION_PROMPT.md](MOBILE_IMAGE_OPTIMIZATION_PROMPT.md).
 The single-upload response data and every batch item contain:
 
 ```json

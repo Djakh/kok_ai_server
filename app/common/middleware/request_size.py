@@ -11,14 +11,20 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             content_length = request.headers.get("content-length")
             if content_length:
                 try:
-                    # Multipart framing is not part of the 30 MB image-byte budget.
-                    too_large = int(content_length) > get_settings().ai_max_request_bytes + 1_000_000
+                    settings = get_settings()
+                    # Multipart framing and scalar fields are not part of the image-byte budget.
+                    maximum_request_bytes = (
+                        settings.ai_max_request_bytes
+                        + settings.request_multipart_overhead_bytes
+                    )
+                    too_large = int(content_length) > maximum_request_bytes
                 except ValueError:
                     too_large = True
                 if too_large:
                     return error_response(
                         "UPLOAD_TOO_LARGE",
                         "The request exceeds the configured upload limit.",
+                        {"max_request_bytes": maximum_request_bytes},
                         status_code=413,
                         request_id=getattr(request.state, "request_id", None),
                     )

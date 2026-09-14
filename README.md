@@ -74,5 +74,9 @@ alembic heads
 
 Mobile developers should use the authoritative [mobile integration guide](docs/KOKAI_MOBILE_BACKEND_CONTRACT.md)
 and the focused [create-tree and Kindwise workflow](docs/CREATE_TREE_KINDWISE_WORKFLOW.md).
+The copy-ready mobile optimization task is in
+[MOBILE_IMAGE_OPTIMIZATION_PROMPT.md](docs/MOBILE_IMAGE_OPTIMIZATION_PROMPT.md). Production Nginx
+must include [kokai-upload-limits.conf](deploy/nginx/kokai-upload-limits.conf) inside the API
+`server` block so proxy and application limits are aligned.
 Backend implementation history remains in the [implementation report](docs/KOKAI_BACKEND_IMPLEMENTATION_REPORT.md)
 and [execution plan](docs/KOKAI_BACKEND_EXECUTION_PLAN.md).

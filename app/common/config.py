@@ -42,8 +42,9 @@ class Settings(BaseSettings):
     analysis_ttl_hours: int = Field(default=24, ge=1, le=720)
 
     ai_max_images: int = Field(default=5, ge=1, le=5)
-    ai_max_image_bytes: int = Field(default=10_000_000, gt=0)
-    ai_max_request_bytes: int = Field(default=30_000_000, gt=0)
+    ai_max_image_bytes: int = Field(default=15 * 1024 * 1024, gt=0)
+    ai_max_request_bytes: int = Field(default=40_000_000, gt=0)
+    request_multipart_overhead_bytes: int = Field(default=2_000_000, ge=0, le=5_000_000)
     ai_max_pixels: int = Field(default=40_000_000, gt=0)
     ai_low_confidence_threshold: float = Field(default=0.55, ge=0, le=1)
     ai_max_concurrent_analyses: int = Field(default=4, ge=1, le=100)
@@ -57,7 +58,7 @@ class Settings(BaseSettings):
     s3_use_ssl: bool = False
     s3_initialize_bucket_on_startup: bool = False
 
-    max_image_size_bytes: int = 10 * 1024 * 1024
+    max_image_size_bytes: int = 15 * 1024 * 1024
     allowed_image_types: str = "image/jpeg,image/png"
 
     rate_limit_auth_per_minute: int = 20

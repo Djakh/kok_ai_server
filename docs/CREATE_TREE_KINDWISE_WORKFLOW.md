@@ -66,10 +66,11 @@ Accepted categories are:
 - `additional`
 
 The normal three-photo mobile capture is `auto`, `bark`, `leaf`, aligned by index with the three
-files. Do not send duplicate categories. Each file is limited to 10,000,000 bytes, the combined
-request to 30,000,000 bytes, and a decoded source to 40 megapixels. Animated or malformed files
-are rejected. The backend applies EXIF orientation, keeps a normalized original, and creates a
-display copy of at most 2 megapixels.
+files. Do not send duplicate categories. Each file is limited to 15 MiB (15,728,640 bytes), the
+combined image content to 40,000,000 bytes, and a decoded source to 40 megapixels. Animated or malformed
+files are rejected. The backend applies EXIF orientation, keeps a normalized original, and creates
+a display copy of at most 2 megapixels. Mobile should target much smaller files; see
+[MOBILE_IMAGE_OPTIMIZATION_PROMPT.md](MOBILE_IMAGE_OPTIMIZATION_PROMPT.md).
 
 Capture location at the same time as the photos. Prefer the full evidence object because it lets
 the backend preserve GPS quality and sampling information:
