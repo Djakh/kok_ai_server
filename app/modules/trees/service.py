@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from geoalchemy2 import WKTElement
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -87,9 +88,13 @@ class TreeService:
     def idempotency_complete(
         self, row: IdempotencyRecord, resource_id: uuid.UUID, payload: dict
     ) -> None:
+        # JSONB does not accept Python datetime/UUID objects. The normal FastAPI
+        # response path encodes them automatically, but durable replay storage
+        # must cross that serialization boundary explicitly before committing.
+        replay_payload = jsonable_encoder(payload)
         row.state = "completed"
         row.response_status = 201
-        row.response_body = payload
+        row.response_body = replay_payload
         row.resource_type = "tree"
         row.resource_id = resource_id
         self.db.commit()

@@ -628,6 +628,45 @@ def test_tree_creation_preserves_photo_capture_time() -> None:
     assert FakeRepo.created_scan.analyzed_at == analyzed_at
 
 
+def test_tree_idempotency_response_is_json_safe_before_database_commit() -> None:
+    now = datetime.now(timezone.utc)
+    tree_id = uuid.uuid4()
+    record = SimpleNamespace(
+        state="received",
+        response_status=None,
+        response_body=None,
+        resource_type=None,
+        resource_id=None,
+    )
+    committed = False
+
+    def commit() -> None:
+        nonlocal committed
+        committed = True
+        json.dumps(record.response_body)
+
+    service = TreeService.__new__(TreeService)
+    service.db = SimpleNamespace(commit=commit)
+    service.idempotency_complete(
+        record,
+        tree_id,
+        {
+            "id": tree_id,
+            "registered_at": now,
+            "location": {"captured_at": now},
+        },
+    )
+
+    assert committed is True
+    assert record.state == "completed"
+    assert record.response_status == 201
+    assert record.response_body == {
+        "id": str(tree_id),
+        "registered_at": now.isoformat(),
+        "location": {"captured_at": now.isoformat()},
+    }
+
+
 def test_analysis_api_valid_multipart_and_provider_failure(client) -> None:
     analysis_id = uuid.uuid4()
 
