@@ -7,6 +7,7 @@ import app.modules.trees.router as trees_router_module
 from app.common.errors.exceptions import AppError
 from app.common.pagination.cursor import decode_cursor
 from app.modules.trees.dependencies import get_tree_service
+from app.modules.trees.repository import TreeRepository
 
 
 class FakeTree:
@@ -41,6 +42,27 @@ class FakeTreeService:
         return FakeTree()
 
 
+class RecordingQuery:
+    def __init__(self):
+        self.filters = []
+
+    def filter(self, *criteria):  # noqa: ANN002
+        self.filters.extend(criteria)
+        return self
+
+    def join(self, *args):  # noqa: ANN002
+        return self
+
+    def order_by(self, *args):  # noqa: ANN002
+        return self
+
+    def limit(self, value):  # noqa: ANN001
+        return self
+
+    def all(self):
+        return []
+
+
 
 def test_trees_list(client):
     client.app.dependency_overrides[get_tree_service] = lambda: FakeTreeService()
@@ -49,6 +71,27 @@ def test_trees_list(client):
     body = resp.json()
     assert body["success"] is True
     assert len(body["data"]["items"]) == 1
+
+
+def test_tree_list_defaults_to_current_owner_and_map_has_no_owner_scope() -> None:
+    viewer_id = uuid.uuid4()
+
+    list_query = RecordingQuery()
+    list_repo = TreeRepository.__new__(TreeRepository)
+    list_repo.db = type("DB", (), {"query": lambda self, model: list_query})()
+    list_repo.list_trees(None, 20, None, None, None, "newest", viewer_id)
+    list_filters = " ".join(str(value) for value in list_query.filters)
+    assert "trees.owner_user_id" in list_filters
+    assert "trees.is_public" not in list_filters
+
+    map_query = RecordingQuery()
+    map_repo = TreeRepository.__new__(TreeRepository)
+    map_repo.db = type("DB", (), {"query": lambda self, model: map_query})()
+    map_repo.map_bbox(69.0, 41.0, 69.5, 41.5, None, viewer_id)
+    map_filters = " ".join(str(value) for value in map_query.filters)
+    assert "trees.owner_user_id" not in map_filters
+    assert "trees.is_public" not in map_filters
+    assert "trees.deleted_at" in map_filters
 
 
 def test_trees_multipart_register(client, monkeypatch):

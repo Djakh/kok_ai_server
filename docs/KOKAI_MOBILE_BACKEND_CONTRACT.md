@@ -449,9 +449,11 @@ List, map, nearby, create, and detail items include:
 }
 ```
 
-`GET /trees` returns all public trees plus the authenticated user's private trees. Filters are
-`cursor`, `limit` (1–200), `status` (`pending|verified|rejected`), `owner_id`, `q`, `species`, and
-`sort` (`newest|nearest|last_scanned`). Nearest requires latitude/longitude.
+`GET /trees` defaults to the authenticated user's own trees, including their private trees. When an
+`owner_id` is explicitly supplied, the endpoint returns that owner's public trees unless the owner
+is the authenticated user. Filters are `cursor`, `limit` (1–200), `status`
+(`pending|verified|rejected`), `owner_id`, `q`, `species`, and `sort`
+(`newest|nearest|last_scanned`). Nearest requires latitude/longitude.
 
 Canonical map query is `bbox=west,south,east,north`. Named `south`, `west`, `north`, `east` are
 accepted as a compatibility alias; unknown query parameters are ignored. Bounds must be valid and
@@ -461,8 +463,10 @@ area must not exceed four square degrees. Center/radius mode is also accepted up
 {"items":[],"clusters":[],"mode":"markers","next_cursor":null}
 ```
 
-The current contract returns every displayable marker inside an accepted viewport, so server-side
-clusters are not required. Records without a valid stored location cannot enter the spatial query.
+`GET /trees/map` is the shared registry and returns every non-deleted registered tree inside an
+accepted viewport, regardless of who created it or its profile visibility. Tree detail and mutation
+authorization are unchanged. Server-side clusters are not required. Records without a valid stored
+location cannot enter the spatial query.
 
 ## Social ownership contract
 

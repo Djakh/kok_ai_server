@@ -54,14 +54,15 @@ class TreeRepository:
         latitude: float | None = None,
         longitude: float | None = None,
     ) -> list[Tree]:
+        requested_owner_id = owner_id or viewer_id
         qry = self.db.query(Tree).filter(
             Tree.deleted_at.is_(None),
-            or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
+            Tree.owner_user_id == requested_owner_id,
         )
+        if requested_owner_id != viewer_id:
+            qry = qry.filter(Tree.is_public.is_(True))
         if status:
             qry = qry.filter(Tree.status == TreeStatus(status))
-        if owner_id:
-            qry = qry.filter(Tree.owner_user_id == owner_id)
         if q:
             qry = qry.filter(
                 or_(
@@ -107,10 +108,13 @@ class TreeRepository:
         status: str | None,
         viewer_id: uuid.UUID,
     ):
+        # The map is the shared registry view. Ownership and profile visibility
+        # do not limit markers; detail and mutation endpoints keep their own
+        # authorization rules.
+        del viewer_id
         qry = self.db.query(Tree).join(TreeLocation, TreeLocation.tree_id == Tree.id)
         qry = qry.filter(
             Tree.deleted_at.is_(None),
-            or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
             func.ST_Intersects(
                 cast(TreeLocation.location, Geometry(geometry_type="POINT", srid=4326)),
                 func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326),
@@ -128,6 +132,7 @@ class TreeRepository:
         status: str | None,
         viewer_id: uuid.UUID,
     ):
+        del viewer_id
         point = cast(
             func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326),
             Geography(geometry_type="POINT", srid=4326),
@@ -135,7 +140,6 @@ class TreeRepository:
         qry = self.db.query(Tree).join(TreeLocation, TreeLocation.tree_id == Tree.id)
         qry = qry.filter(
             Tree.deleted_at.is_(None),
-            or_(Tree.is_public.is_(True), Tree.owner_user_id == viewer_id),
             func.ST_DWithin(TreeLocation.location, point, radius),
         )
         if status:
