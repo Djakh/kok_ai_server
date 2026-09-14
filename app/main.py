@@ -52,7 +52,7 @@ app = FastAPI(
     version="1.3.0",
     description=(
         "KOK.AI API. Species and optional visible-condition inference are provided by "
-        "third-party Kindwise Plant.id; provider credentials and raw responses are never exposed."
+        "a configurable server-side provider; credentials and raw responses are never exposed."
     ),
     lifespan=lifespan,
 )
@@ -85,7 +85,7 @@ def health() -> dict[str, str]:
 @app.get("/ready", tags=["operations"])
 def ready(request: Request):
     errors = settings.production_config_errors()
-    if not settings.kindwise_api_key and not settings.is_production:
+    if not settings.active_plant_provider_configured and not settings.is_production:
         errors.append("plant analysis provider configuration is missing")
     try:
         with engine.connect() as connection:

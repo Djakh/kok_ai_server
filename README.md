@@ -4,7 +4,8 @@ FastAPI/PostgreSQL/PostGIS backend for the KOK.AI mobile app. The authoritative 
 
 `POST /api/v1/tree-analyses` → `GET /api/v1/trees/nearby` → `POST /api/v1/trees`
 
-Kindwise Plant.id is called only by this backend. The API key, provider token, and raw provider response are never returned to mobile clients.
+Plant identification is called only by this backend. OpenAI is the default provider for the MVP;
+Kindwise remains selectable. Provider keys and raw provider responses are never returned to mobile clients.
 
 ## Run locally
 
@@ -12,7 +13,7 @@ Docker is the supported full-stack path:
 
 ```bash
 cp .env.example .env
-# Put your Kindwise key in KOK_KINDWISE_API_KEY in .env.
+# Put your server-side OpenAI key in KOK_OPENAI_API_KEY in .env.
 docker compose up --build
 ```
 
@@ -44,17 +45,28 @@ For a physical phone, use `http://<computer-LAN-IP>:8000`; Android Emulator uses
 Set `KOK_PUBLIC_API_BASE_URL` to that same reachable origin. In production it must be the public
 HTTPS API origin (for example, `https://api.example.com`), because media URLs are built from it.
 
-## Kindwise configuration
+## Plant analysis provider configuration
 
 Required for live analysis:
 
 ```dotenv
+KOK_PLANT_ANALYSIS_PROVIDER=openai
+KOK_OPENAI_API_KEY=your-server-side-key
+KOK_OPENAI_MODEL=gpt-5.6-luna
+```
+
+To switch back without a code change:
+
+```dotenv
+KOK_PLANT_ANALYSIS_PROVIDER=kindwise
 KOK_KINDWISE_API_KEY=your-server-side-key
 KOK_KINDWISE_BASE_URL=https://plant.id/api/v3
 KOK_KINDWISE_HEALTH_MODE=off
 ```
 
 `off` avoids optional health-credit use. Allowed health modes are `off`, `auto`, and `all`. Automated tests use fixtures and never make live Kindwise calls.
+OpenAI calls use the Responses API, strict Structured Outputs, all submitted views in one request,
+and `store=false`. See [the OpenAI provider workflow](docs/OPENAI_TREE_ANALYSIS_PROVIDER.md).
 
 ## Quality checks
 

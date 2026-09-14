@@ -162,6 +162,7 @@ class TreeAnalysisService:
                 {"analysis_id": str(existing.id)},
             )
 
+        provider_name = getattr(self.provider, "name", "kindwise_plant_id")
         try:
             analysis = self.repo.create(
                 TreeAnalysis(
@@ -172,8 +173,12 @@ class TreeAnalysisService:
                     latitude=float(location_evidence["latitude"]),
                     longitude=float(location_evidence["longitude"]),
                     location_evidence=location_evidence,
-                    provider_name="kindwise_plant_id",
-                    health_mode=self.settings.kindwise_health_mode,
+                    provider_name=provider_name,
+                    health_mode=(
+                        self.settings.kindwise_health_mode
+                        if provider_name == "kindwise_plant_id"
+                        else "auto"
+                    ),
                     numeric_provider_custom_id=new_provider_custom_id(),
                 )
             )
@@ -291,9 +296,7 @@ class TreeAnalysisService:
             analyzed_at = datetime.now(timezone.utc)
             analysis.provider_is_plant_binary = result.is_plant
             analysis.provider_is_plant_probability = result.is_plant_probability
-            analysis.provider_metadata = {
-                "model_version": result.provider_metadata.get("model_version")
-            }
+            analysis.provider_metadata = result.provider_metadata
             analysis.raw_provider_response = None
             analysis.analyzed_at = analyzed_at
             if not result.is_plant:

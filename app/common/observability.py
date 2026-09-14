@@ -17,7 +17,11 @@ _gauges: dict[str, float] = defaultdict(float)
 _analysis_semaphore = asyncio.Semaphore(
     min(
         get_settings().ai_max_concurrent_analyses,
-        get_settings().kindwise_max_concurrency,
+        (
+            get_settings().kindwise_max_concurrency
+            if get_settings().plant_analysis_provider == "kindwise"
+            else get_settings().ai_max_concurrent_analyses
+        ),
     )
 )
 

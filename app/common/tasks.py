@@ -58,6 +58,9 @@ def monitor_kindwise_usage() -> dict[str, str | float | bool]:
     from app.common.observability import set_gauge
     from app.modules.tree_analyses.kindwise import KindwisePlantIdClient
 
+    if settings.plant_analysis_provider != "kindwise" or not settings.kindwise_api_key:
+        set_gauge("kok_ai_kindwise_active", 0)
+        return {"status": "inactive", "active": False}
     usage = asyncio.run(KindwisePlantIdClient(settings).usage_info())
     remaining = float(usage.get("remaining", usage.get("remaining_credits", 0)) or 0)
     active = bool(usage.get("active", False))

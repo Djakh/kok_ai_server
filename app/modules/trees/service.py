@@ -446,10 +446,10 @@ class TreeService:
             latitude=latitude,
             longitude=longitude,
             health_summary=result.get("health") or {"status": "not_available"},
-            provider_name=(
-                result.get("provider")
-                if isinstance(result.get("provider"), str)
-                else (result.get("provider") or {}).get("name", "unknown")
+            provider_name=getattr(
+                analysis,
+                "provider_name",
+                result.get("provider", "kindwise_plant_id"),
             ),
             warnings=[],
             notes=notes,
@@ -464,7 +464,8 @@ class TreeService:
             "summary": scan.notes or "Follow-up visual scan",
             "image_url": None,
             "health": health,
-            "provider": scan.provider_name,
+            # Preserve the legacy mobile contract while retaining the real provider in the DB.
+            "provider": "kindwise_plant_id",
             "capabilities": {
                 "identification": "available",
                 "health": (
@@ -473,7 +474,7 @@ class TreeService:
             },
             "attribution": {
                 "provider": "Kindwise Plant.id",
-                "provider_id": scan.provider_name,
+                "provider_id": "kindwise_plant_id",
             },
             "uncertainty": {
                 "confidence_scale": "0_to_1",

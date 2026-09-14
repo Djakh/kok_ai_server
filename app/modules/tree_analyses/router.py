@@ -89,7 +89,7 @@ def _mobile_location_evidence(
     response_model=AnalysisEnvelope,
     status_code=201,
     dependencies=[AnalysisRateLimit],
-    summary="Analyze categorized tree photos using server-side Kindwise Plant.id",
+    summary="Analyze categorized tree photos using the configured server-side provider",
 )
 async def create_tree_analysis(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=160)],
@@ -152,7 +152,8 @@ def get_tree_analysis(
         {
             "id": str(analysis.id),
             "status": analysis.status,
-            "provider": analysis.provider_name,
+            # Compatibility alias: AnalysisPayload is intentionally unchanged for Flutter.
+            "provider": "kindwise_plant_id",
             "analyzed_at": analysis.analyzed_at,
             "candidates": [],
             "species_candidates": [],

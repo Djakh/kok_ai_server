@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     android_store_url: str | None = None
     maintenance_mode: bool = False
     maintenance_message: str | None = None
+    plant_analysis_provider: Literal["openai", "kindwise"] = "openai"
+    openai_api_key: str = ""
+    openai_model: str = Field(default="gpt-5.6-luna", min_length=1)
+    openai_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    openai_max_output_tokens: int = Field(default=1800, ge=256, le=10_000)
     kindwise_api_key: str = ""
     kindwise_base_url: str = "https://plant.id/api/v3"
     kindwise_language: Literal["en", "ru", "uz"] = "en"
@@ -97,8 +102,10 @@ class Settings(BaseSettings):
         if not self.is_production:
             return []
         errors: list[str] = []
-        if not self.kindwise_api_key:
-            errors.append("KOK_KINDWISE_API_KEY is required")
+        if self.plant_analysis_provider == "openai" and not self.openai_api_key:
+            errors.append("KOK_OPENAI_API_KEY is required when OpenAI is active")
+        if self.plant_analysis_provider == "kindwise" and not self.kindwise_api_key:
+            errors.append("KOK_KINDWISE_API_KEY is required when Kindwise is active")
         if "*" in self.cors_origins_list:
             errors.append("KOK_CORS_ORIGINS must be an explicit allowlist")
         if "localhost" in self.database_url or "@localhost" in self.database_url:
@@ -113,7 +120,9 @@ class Settings(BaseSettings):
             errors.append("S3-compatible object storage settings are required")
         if "localhost" in self.s3_endpoint_url or "localhost" in self.s3_public_base_url:
             errors.append("KOK_S3 endpoints must not point to localhost")
-        if not self.kindwise_base_url.startswith("https://"):
+        if self.plant_analysis_provider == "kindwise" and not self.kindwise_base_url.startswith(
+            "https://"
+        ):
             errors.append("KOK_KINDWISE_BASE_URL must use HTTPS")
         if not self.public_api_base_url.startswith("https://"):
             errors.append("KOK_PUBLIC_API_BASE_URL must use HTTPS")
@@ -126,6 +135,12 @@ class Settings(BaseSettings):
         if self.ai_max_request_bytes > 50_000_000:
             errors.append("KOK_AI_MAX_REQUEST_BYTES must not exceed the provider limit")
         return errors
+
+    @property
+    def active_plant_provider_configured(self) -> bool:
+        if self.plant_analysis_provider == "openai":
+            return bool(self.openai_api_key)
+        return bool(self.kindwise_api_key)
 
 
 @lru_cache
