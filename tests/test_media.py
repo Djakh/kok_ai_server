@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import app.common.storage.s3 as storage_module
 import app.modules.uploads.media_router as media_router_module
 from app.common.db.session import get_db
+from app.common.request_context import request_origin_context
 from app.modules.uploads.schemas import UploadedAssetResponse
 from app.modules.users.schemas import UserPublic
 
@@ -37,6 +38,44 @@ def test_public_asset_url_uses_api_not_private_storage(monkeypatch) -> None:
     assert storage_module.get_public_asset_url(asset_id) == (
         f"https://api.example.test/api/v1/media/{asset_id}"
     )
+
+
+def test_public_asset_url_uses_request_origin_when_config_is_localhost(monkeypatch) -> None:
+    asset_id = uuid.uuid4()
+    monkeypatch.setattr(
+        storage_module,
+        "settings",
+        SimpleNamespace(
+            public_api_base_url="http://localhost:8000",
+            api_prefix="/api/v1",
+        ),
+    )
+    token = request_origin_context.set("https://api.kokai.uz")
+    try:
+        assert storage_module.get_public_asset_url(asset_id) == (
+            f"https://api.kokai.uz/api/v1/media/{asset_id}"
+        )
+    finally:
+        request_origin_context.reset(token)
+
+
+def test_configured_public_origin_wins_over_request_host(monkeypatch) -> None:
+    asset_id = uuid.uuid4()
+    monkeypatch.setattr(
+        storage_module,
+        "settings",
+        SimpleNamespace(
+            public_api_base_url="https://cdn.example.test",
+            api_prefix="/api/v1",
+        ),
+    )
+    token = request_origin_context.set("https://untrusted.example")
+    try:
+        assert storage_module.get_public_asset_url(asset_id) == (
+            f"https://cdn.example.test/api/v1/media/{asset_id}"
+        )
+    finally:
+        request_origin_context.reset(token)
 
 
 def test_public_media_streams_private_object(client, monkeypatch) -> None:

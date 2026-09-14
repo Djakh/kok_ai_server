@@ -4,6 +4,7 @@ import io
 import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import boto3
 from botocore.client import BaseClient
@@ -13,16 +14,23 @@ from starlette.datastructures import UploadFile
 
 from app.common.config import get_settings
 from app.common.errors.exceptions import AppError
+from app.common.request_context import request_origin_context
 
 settings = get_settings()
 
 
+def _public_api_origin() -> str:
+    configured = settings.public_api_base_url.rstrip("/")
+    hostname = (urlsplit(configured).hostname or "").casefold()
+    request_origin = request_origin_context.get()
+    if request_origin and hostname in {"localhost", "127.0.0.1", "::1"}:
+        return request_origin.rstrip("/")
+    return configured
+
+
 def get_public_asset_url(asset_id: uuid.UUID | str) -> str:
     """Return the HTTPS/API URL clients can use instead of the private S3 endpoint."""
-    return (
-        f"{settings.public_api_base_url.rstrip('/')}"
-        f"{settings.api_prefix}/media/{asset_id}"
-    )
+    return f"{_public_api_origin()}{settings.api_prefix}/media/{asset_id}"
 
 
 def get_tree_analysis_image_url(
@@ -33,7 +41,7 @@ def get_tree_analysis_image_url(
     expires = int(time.time()) + expires_seconds
     signature = _analysis_image_signature(image_id, expires)
     return (
-        f"{settings.public_api_base_url.rstrip('/')}"
+        f"{_public_api_origin()}"
         f"{settings.api_prefix}/media/tree-analysis/{image_id}"
         f"?expires={expires}&signature={signature}"
     )
