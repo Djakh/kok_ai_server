@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, Request
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
@@ -32,6 +33,26 @@ from app.modules.uploads.service import UploadService
 from app.modules.users.models import User
 
 router = APIRouter(prefix="/social", tags=["social"])
+
+
+def _social_create_payload(raw_payload: Any) -> SocialCreateByUploadRequest:
+    try:
+        return SocialCreateByUploadRequest.model_validate(raw_payload)
+    except ValidationError as exc:
+        details = [
+            {
+                "type": error.get("type"),
+                "location": ["body", *error.get("loc", ())],
+                "message": error.get("msg"),
+            }
+            for error in exc.errors()
+        ]
+        raise AppError(
+            "validation_error",
+            "Request validation failed",
+            422,
+            {"field_errors": details},
+        ) from exc
 
 
 def _set_viewer(service: SocialService, user_id: uuid.UUID) -> None:
@@ -160,7 +181,11 @@ async def create_post(
             replay = get_replayed_response(str(current.user.id), idempotency_key, body_hash)
             if replay:
                 return success_response(replay)
-        request_payload = SocialCreateByUploadRequest.model_validate(await request.json())
+        try:
+            raw_payload = await request.json()
+        except ValueError as exc:
+            raise AppError("validation_error", "Request body is not valid JSON", 422) from exc
+        request_payload = _social_create_payload(raw_payload)
         upload_ref = request_payload.upload_id or request_payload.image_path
         post = service.create_post(
             user_id=current.user.id,

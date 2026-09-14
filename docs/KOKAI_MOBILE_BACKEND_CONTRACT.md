@@ -502,9 +502,9 @@ Canonical JSON post creation is:
 ```
 
 `content` is 1–2000 characters. `upload_id` is nullable/optional and must identify an owned upload.
-`location` is required for compatibility: send both numeric coordinates, or send
-`{ "latitude": null, "longitude": null }` for no location. Supplying only one coordinate returns
-`422`. `created_at` is a timezone-aware ISO-8601 timestamp. Deprecated `image_path` accepts only an
+`location` is optional. When supplied, send both numeric coordinates or
+`{ "latitude": null, "longitude": null }`; supplying only one coordinate returns `422`.
+`created_at` is a timezone-aware ISO-8601 timestamp. Deprecated `image_path` accepts only an
 upload UUID alias; local filesystem paths are rejected. Multipart creation remains supported with
 `content`, `created_at`, optional paired `latitude`/`longitude`, and optional binary `image`.
 

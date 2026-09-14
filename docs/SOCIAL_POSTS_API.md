@@ -179,9 +179,10 @@ Idempotency-Key: <new-uuid-for-this-operation>
 }
 ```
 
-`content` is 1–2000 characters. `location` must contain both coordinates or both values must be
-`null`. `upload_id` must belong to the authenticated user. Device paths are rejected. The response
-is `201` with the complete post representation.
+`content` is 1–2000 characters. `location` is optional; when present, it must contain both
+coordinates or both values must be `null`. `upload_id` must belong to the authenticated user.
+Device paths are rejected. `created_at` must include a timezone. The response is `201` with the
+complete post representation.
 
 Multipart creation remains supported for older clients using fields `content`, `created_at`,
 optional paired `latitude`/`longitude`, and binary `image`.

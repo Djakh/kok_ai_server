@@ -37,6 +37,7 @@ class FakeRepo:
 class FakeSocialService:
     def __init__(self):
         self.repo = FakeRepo()
+        self.create_args = None
         self.db = SimpleNamespace(
             query=lambda model: SimpleNamespace(
                 filter=lambda *args: SimpleNamespace(
@@ -66,6 +67,7 @@ class FakeSocialService:
         }
 
     def create_post(self, user_id, content, created_at, upload_id, latitude, longitude):  # noqa: ANN001
+        self.create_args = (user_id, content, created_at, upload_id, latitude, longitude)
         return FakePost()
 
     def add_comment(self, post_id, user_id, content):  # noqa: ANN001
@@ -132,6 +134,41 @@ def test_social_multipart_create(client, monkeypatch):
     resp = client.post("/api/v1/social/posts", data=data, files=files)
     assert resp.status_code == 201
     assert resp.json()["success"] is True
+
+
+def test_social_json_create_with_upload_does_not_require_location(client, monkeypatch):
+    fake_service = FakeSocialService()
+    client.app.dependency_overrides[get_social_service] = lambda: fake_service
+    monkeypatch.setattr(social_router_module, "get_replayed_response", lambda *args: None)
+    monkeypatch.setattr(social_router_module, "save_response", lambda *args: None)
+    upload_id = str(uuid.uuid4())
+
+    response = client.post(
+        "/api/v1/social/posts",
+        json={
+            "content": "fff",
+            "upload_id": upload_id,
+            "created_at": "2026-09-13T16:53:54.449409Z",
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["success"] is True
+    assert fake_service.create_args[3:] == (upload_id, None, None)
+
+
+def test_social_json_validation_returns_422_instead_of_500(client):
+    client.app.dependency_overrides[get_social_service] = lambda: FakeSocialService()
+
+    response = client.post(
+        "/api/v1/social/posts",
+        json={"content": "fff", "created_at": "2026-09-13T16:53:54"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert response.json()["error"]["details"]["field_errors"]
 
 
 def test_social_comment_create_then_list(client):

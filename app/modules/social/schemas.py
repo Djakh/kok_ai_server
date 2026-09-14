@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OptionalLocation(BaseModel):
@@ -19,8 +19,15 @@ class OptionalLocation(BaseModel):
 class SocialCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     image_path: str | None = None
-    location: OptionalLocation
+    location: OptionalLocation = Field(default_factory=OptionalLocation)
     created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def created_at_requires_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("created_at must include a timezone")
+        return value
 
 
 class SocialCreateByUploadRequest(BaseModel):
@@ -29,8 +36,15 @@ class SocialCreateByUploadRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     image_path: str | None = None
     upload_id: str | None = None
-    location: OptionalLocation
+    location: OptionalLocation = Field(default_factory=OptionalLocation)
     created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def created_at_requires_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("created_at must include a timezone")
+        return value
 
 
 class SocialPatchRequest(BaseModel):
